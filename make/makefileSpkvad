@@ -1,0 +1,70 @@
+
+CC=gcc
+CCC=g++
+CXX=g++
+
+PROGRAM := spkvad
+CPPSRCS:= ../src/spkmain/spkvad.cpp ../src/waveinfo.cpp
+CSRCS:=
+BDIR:=build$(PROGRAM)
+COBJS:= 
+CPPOBJS:= 
+CPRES:= 
+CPPPRES:=
+
+CONF:=Debug
+BDIR:=$(BDIR)/$(CONF)
+TDIR:=../test242/ioacas
+PROGRAM:=$(TDIR)/$(PROGRAM)
+
+ifeq (Debug,$(CONF))
+CPPFLAGS+=-g -Wall
+else
+CPPFLAGS+=-O2 -Wall
+endif
+
+LDLIBS+=-L$(TDIR) -ldllSRVADCluster -lMusicDetect
+
+.PHONY: all
+all: ${PROGRAM}
+
+define CPRE_template
+CPRETMP:=$(BDIR)/$(notdir $(1:.c=.d))
+COBJS += $$(CPRETMP:.d=.o)
+CPRES += $$(CPRETMP)
+$$(CPRETMP): $(1)
+	mkdir -p $(BDIR)
+	set -e; $$(CC) -MM $$< | \
+	sed 's,\($$(notdir $$(@:.d=.o))\)[ ]*:,$(BDIR)/\1 $$@ :,' > $$@
+endef
+$(foreach csrc, $(CSRCS), $(eval $(call CPRE_template, $(csrc))))
+
+define CPPPRE_template
+CPPPRETMP:=$(BDIR)/$(notdir $(1:.cpp=.d))
+CPPOBJS += $$(CPPPRETMP:.d=.o)
+CPPPRES += $$(CPPPRETMP)
+$$(CPPPRETMP): $(1)
+	mkdir -p $(BDIR)
+	set -e; $$(CC) -MM $$< | \
+	sed 's,\($$(notdir $$(@:.d=.o))\)[ ]*:,$(BDIR)/\1 $$@ :,' > $$@
+endef
+$(foreach cppsrc, $(CPPSRCS), $(eval $(call CPPPRE_template, $(cppsrc))))
+
+include $(CPRES) $(CPPPRES)
+
+
+${CPPOBJS}: %.o:
+	$(COMPILE.cc) $< -o $@
+
+${COBJS}: %.o:
+	$(COMPILE.c) $< -o $@
+
+
+${PROGRAM}: ${CPPOBJS} ${COBJS}
+	${CCC} -o $@ $^ ${LDLIBS} 
+
+
+
+
+
+

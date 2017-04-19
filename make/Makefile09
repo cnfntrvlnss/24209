@@ -1,0 +1,30 @@
+CC=gcc
+CCC=g++
+CXX=g++
+
+CND_PLATFORM=Intel-Linux-x86
+CONF=Debug
+CND_DISTDIR=dist09
+CND_BUILDDIR=build09
+OBJDIR=${CND_BUILDDIR}/${CONF}/${CND_PLATFORM}/
+DISTDIR := ${CND_DISTDIR}/${CONF}/${CND_PLATFORM}/
+MODE=Test
+TESTDIR=../test09/ioacas/
+
+VPATH=../src/:../src/wav/
+
+CPPNAMES:=interface242.cpp ioareg.cpp commonFunc.cpp log4z.cpp ProjectBuffer.cpp  utilites.cpp  socket_ex.cpp
+CPPNAMES += dllVAD_dup.cpp MusicDetect_dup.cpp TLI_API_dup.cpp
+CPPNAMES += spk_ex.cpp
+CPPNAMES+= waveinfo.cpp Voc2Wav.cpp WaveFunc.cpp
+CNAMES:=
+PROGNAME=libIOACAS.so
+LDLIBS +=-L${TESTDIR} -ldl -lFrontEnd -lSpkAPI -lTLI_API -lNewVAD -lMusicDetect -Wl,-rpath-link=${TESTDIR}
+LDFLAGS += -lpthread -shared
+CFLAGS +=
+ifneq (${CONF},Debug)
+CFLAGS+= -O2 -Wall -fPIC
+else
+CFLAGS+= -g -Wall -fPIC
+endif
+
