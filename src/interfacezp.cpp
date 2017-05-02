@@ -11,7 +11,7 @@
 #include "utilites.h"
 #include "ProjectBuffer.h"
 #include "ioareg.h"
-//#include "../../serv242_09/src/audiz/audizcli_p.h"
+#include "../../serv242_09/src/audiz/audizcli_p.h"
 
 #include <set>
 
@@ -63,7 +63,6 @@ pthread_mutex_t g_lockNewReported = PTHREAD_MUTEX_INITIALIZER;
 //////////////////---bamp---
 //NOTE: only support 3 secs segment.
 static unsigned g_uBampFixedLen = 3 * PCM_ONESEC_LEN;
-
 
 /**
  * TODO 两个参数的含义还是不够明确，不知道怎么写这个函数.
@@ -142,7 +141,6 @@ static std::string formReportFilterStr(const std::map<int, int> &filter)
     return oss.str();
 }
 
-/*
 struct SpkMdlStVecImpl: public SpkMdlStVec, SpkMdlStVec::iterator
 {
     SpkMdlStVecImpl* iter(){
@@ -156,15 +154,14 @@ static SpkMdlStVecImpl g_DummySpkVec;
 static char g_AudizPath[MAX_PATH] = "../ioacases/dataCenter";
 static bool g_bUseRecSess = false;
 static SessionStruct *g_RecSess = NULL;
-*/
 
 static void initGlobal(BufferConfig &myBufCfg)
 {
     g_strIp = GetLocalIP();
     Config_getValue(&g_AutoCfg, "", "ifSkipSameProject", g_bSaveAfterRec);
     Config_getValue(&g_AutoCfg, "", "savePCMTopDir", m_TSI_SaveTopDir);
-    //Config_getValue(&g_AutoCfg, "", "ifUseRecSess", g_bUseRecSess);
-    //Config_getValue(&g_AutoCfg, "", "audizCenterDataPath", g_AudizPath);
+    Config_getValue(&g_AutoCfg, "", "ifUseRecSess", g_bUseRecSess);
+    Config_getValue(&g_AutoCfg, "", "audizCenterDataPath", g_AudizPath);
     Config_getValue(&g_AutoCfg, "bamp", "ifUseBAMP", g_bUseBamp);
     Config_getValue(&g_AutoCfg, "bamp", "reportBampThreshold", g_fReportBampThrd);
     Config_getValue(&g_AutoCfg, "bamp", "bampVadThreadNum", g_uBampVadNum);
@@ -218,7 +215,7 @@ static void initGlobal(BufferConfig &myBufCfg)
 static void * bampMatchThread(void *);
 static void *ioacas_maintain_procedure(void *);
 static void reportBampResultSeg(BampResultParam param, ostream& oss);
-static bool addBampProj(ProjectBuffer *proj);
+static int addBampProj(ProjectBuffer *proj);
 
 int InitDLL(int iPriority,
         int iThreadNum,
@@ -280,10 +277,9 @@ int InitDLL(int iPriority,
 		pthread_attr_destroy(&threadAttr);
     }
 
-    /*
     if(g_bUseRecSess){
         g_RecSess = new SessionStruct(g_AudizPath, NULL, &g_DummySpkVec);
-    }*/
+    }
     g_bInitialized = true;
     return 0;
 }
@@ -298,22 +294,24 @@ int SendData2DLL(WavDataUnit *p)
         return -1;
     }
     assert(p->m_iDataLen == g_uBampFixedLen);
+    string outputr;
     clockoutput_start("SendData2DLL");
     ProjectSegment prj;
     prj.pid = p->m_iPCBID;
     prj.data = p->m_pData;
     prj.len = p->m_iDataLen;
     recvProjSegment(prj, !g_bDiscardable);
-    /*
-    if(g_bUseRecSess != NULL){
+    if(g_RecSess != NULL){
+        clockoutput_start("SendData2Remote");
         Audiz_WaveUnit unit;
         unit.m_iPCBID = prj.pid;
         unit.m_iDataLen = prj.len;
         unit.m_pData = prj.data;
         g_RecSess->writeData(&unit);
-    }*/
+        outputr = clockoutput_end();
+    }
     string output = clockoutput_end();
-    LOGFMTT(output.c_str());
+    LOGFMTT("%s %s", output.c_str(), outputr.c_str());
 
     return 0;
 }
@@ -337,7 +335,7 @@ static void appendDataToReportFile(BampMatchParam &par)
     }
     else if(par.bHit){
         vector<DataBlock> prjData;
-        par.ptrBuf->getDataSegment(1, 0, par.preIdx, par.preOffset, prjData);
+        par.ptrBuf->getDataSegment(prjData, 0, 0, par.preIdx - 1, par.preOffset);
         char savedfile[MAX_PATH];
         gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, par.curtime.tv_sec, par.pid, NULL, NULL, NULL);
         char *stSufPtr = strrchr(savedfile, '.');
@@ -354,28 +352,106 @@ static void appendDataToReportFile(BampMatchParam &par)
     }
 }
 
+struct KwMatchSpace{
+    explicit KwMatchSpace(ProjectBuffer *p):
+        prj(p), curStIdx(0), dataLen(0)
+    {
+        projTime = prj->getPrjTime();
+        bufSize = 16000 * 6;
+        afterVADBuf = (char*)malloc(bufSize);
+        assert(afterVADBuf != NULL);
+        //pthread_mutex_init(&anoKwLock, NULL);
+    }
+    ~KwMatchSpace(){
+        //pthread_mutex_destroy(&anoKwLock);
+        free(afterVADBuf);
+        returnBuffer(prj);
+    }
+    
+    void appendData(vector<DataBlock> freshData){
+        //pthread_mutex_lock(&anoKwLock);
+        prjData.insert(prjData.end(), freshData.begin(), freshData.end());
+        //pthread_mutex_unlock(&anoKwLock);
+    }
+
+    ProjectBuffer *prj;
+    struct timeval projTime;
+    vector<DataBlock> prjData;
+    unsigned curStIdx;
+    char *afterVADBuf;
+    unsigned bufSize;
+    unsigned dataLen;
+    //pthread_mutex_t anoKwLock;
+};
+static map<unsigned long,  KwMatchSpace*> g_AllProjs4Kw;
+static pthread_mutex_t g_AllProjs4KwLocker = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * 返回下一个待处理的节目；若到达了末尾，返回NULL.
+ */
+static KwMatchSpace *getNextKwSpace()
+{
+    static unsigned long nextProjID;
+    KwMatchSpace *ret = NULL;
+    pthread_mutex_lock(&g_AllProjs4KwLocker);
+    map<unsigned long, KwMatchSpace*>::iterator it = g_AllProjs4Kw.lower_bound(nextProjID);
+    if(it == g_AllProjs4Kw.end()){
+        nextProjID = 0;
+    }
+    else{
+        ret = it->second;
+        nextProjID = ret->prj->ID;
+    }
+    pthread_mutex_unlock(&g_AllProjs4KwLocker);
+    return ret;
+}
+
+static void delKwSpace(KwMatchSpace* kwsp)
+{
+    pthread_mutex_lock(&g_AllProjs4KwLocker);
+    assert(g_AllProjs4Kw.erase(kwsp->prj->ID) == 1);
+    delete kwsp;
+    pthread_mutex_unlock(&g_AllProjs4KwLocker);
+}
+
+void *KwMatchThread(void *)
+{
+    
+}
+
 static map<unsigned long, ProjectBuffer*> g_AllProjs4Bamp;
 static pthread_mutex_t g_AllProjs4BampLocker = PTHREAD_MUTEX_INITIALIZER;
-static bool addBampProj(ProjectBuffer *proj)
+static int addBampProj(ProjectBuffer *proj)
 {
     pthread_mutex_lock(&g_AllProjs4BampLocker);
     assert(g_AllProjs4Bamp.find(proj->ID) == g_AllProjs4Bamp.end());
     g_AllProjs4Bamp[proj->ID] = proj;
     pthread_mutex_unlock(&g_AllProjs4BampLocker);
-    return true;
+    
+    pthread_mutex_lock(&g_AllProjs4KwLocker);
+    assert(g_AllProjs4Kw.find(proj->ID) == g_AllProjs4Kw.end());
+    g_AllProjs4Kw[proj->ID] = new KwMatchSpace(proj);
+    pthread_mutex_unlock(&g_AllProjs4KwLocker);
+    return 2;
 }
 
-static ProjectBuffer *getNextBampProj(unsigned long pid)
+static ProjectBuffer *getNextBampProj()
 {
+    static unsigned long nextProjID;
     ProjectBuffer *ret = NULL;
     pthread_mutex_lock(&g_AllProjs4BampLocker);
-    map<unsigned long, ProjectBuffer*>::iterator it = g_AllProjs4Bamp.lower_bound(pid);
-    if(it != g_AllProjs4Bamp.end()){
+    map<unsigned long, ProjectBuffer*>::iterator it = g_AllProjs4Bamp.lower_bound(nextProjID);
+    if(it == g_AllProjs4Bamp.end()){
+        nextProjID = 0;
+    }
+    else{
         ret = it->second;
+        nextProjID = ret->ID + 1;
     }
     pthread_mutex_unlock(&g_AllProjs4BampLocker);
     return ret;
 }
+
 static void delBampProj(ProjectBuffer *prj)
 {
     pthread_mutex_lock(&g_AllProjs4BampLocker);
@@ -402,13 +478,11 @@ void * bampMatchThread(void *)
         sleep(1);
         vector<BampMatchParam> allBufs;
         allBufs.clear();
-        unsigned long curpid = 0;
         unsigned allcnt = 0;
         unsigned retcnt = 0;
         while(true){
-            ProjectBuffer* tmpPrj = getNextBampProj(curpid);
+            ProjectBuffer* tmpPrj = getNextBampProj();
             if(tmpPrj == NULL) break;
-            curpid = tmpPrj->ID + 1;
             allcnt ++;
             BampMatchParam tmpPar(tmpPrj->ID, tmpPrj);
             bool bPrjFull = false;
@@ -443,6 +517,8 @@ void * bampMatchThread(void *)
     }
     return NULL;
 }
+
+
 
 int CloseDLL()
 {
@@ -500,29 +576,6 @@ int GetDataNum4Process(int iType[], int num[])
 }
 
 extern unsigned char linear2alaw(short pcm_val);
-/*
-bool saveWaveAsAlaw(const vector<DataBlock>& vecData, const char* filePath)
-{
-    FILE *fp = fopen(filePath, "wb");
-    if(fp == NULL) return false;
-    char zero = '\0';
-    for(size_t idx=0; idx < 256; idx++){
-        fwrite(&zero, 1, 1, fp);
-    }
-    for(size_t idx=0; idx < vecData.size(); idx++){
-        short *tmpPtr = reinterpret_cast<short*>(vecData[idx].getPtr() + vecData[idx].offset);
-        assert(vecData[idx].len % 2 == 0);
-        unsigned tmpLen = vecData[idx].len / 2;
-        for(size_t jdx=0; jdx < tmpLen; jdx ++){
-            char tmpCh = linear2alaw(tmpPtr[jdx]);
-            fwrite(&tmpCh, 1, 1, fp);
-        }
-    }
-    fclose(fp);
-    return true;
-}
-*/
-
 bool saveWaveAsAlaw(char* pcmData, unsigned pcmlen, const char *filePath)
 {
     FILE *fp = fopen(filePath, "wb");
@@ -679,89 +732,4 @@ void *ioacas_maintain_procedure(void *)
     }
     return NULL;
 }
-#if 0
-void reportBampResult(time_t curtime, CDLLResult *pResult, ostream& oss)
-{
-    oss<< " InProjectStart="<< pResult->m_fSegPosInPCB[0]<< " MatchedDuration="<< pResult->m_fTargetMatchLen<< " CfgID="<< pResult->m_iTargetID <<" InCfgStart="<< pResult->m_fSegPosInTarget[0]<< " MatchRate="<< pResult->m_fSegLikely[0];
-    char savedfile[MAX_PATH];
-    unsigned short type = pResult->m_iAlarmType;
-    const WavDataUnit &prj = (*pResult->m_pDataUnit[0]);
-    
-    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, curtime, prj.m_iPCBID, &type, NULL, NULL);
-    snprintf(pResult->m_strInfo, 1024, "%s:%s", g_strIp.c_str(), savedfile);
-    if(access(savedfile, F_OK) != 0){
-        if(!saveWave(prj.m_pData, prj.m_iDataLen, savedfile)){
-            LOGFMT_ERROR(g_logger, "reportBampResult failed to write wave to file %s.", savedfile);
-            return;
-        }
-        oss<< " ProjectPath="<< pResult->m_strInfo << " ";
-    }
-
-    g_ReportResultAddr(g_iModuleID, pResult);
-}
-
-bool reportResult(CDLLResult &result, char *writeLog, unsigned &len)
-{
-    unsigned long &pid = result.m_pDataUnit[0]->m_iPCBID;
-    int confidence = (int)result.m_fLikely;
-    unsigned configID = result.m_iTargetID;
-    unsigned alarmType = result.m_iAlarmType;
-    len += sprintf(writeLog + len, "ALARMTYPE=%u TARGETID=%u CONFIDENCE=%d", alarmType, configID, confidence);
-    char savedfile[MAX_PATH];
-    time_t curtime = time(NULL);
-    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, curtime, pid, &g_uLangServType, &configID, &confidence);
-    snprintf(result.m_strInfo, 1024, "%s:%s", g_strIp.c_str(), savedfile);
-    bool retSave = saveWave((char*)result.m_pDataUnit[0]->m_pData, result.m_pDataUnit[0]->m_iDataLen, savedfile);
-    if(retSave){
-        if(writeLog!=NULL){
-            len += sprintf(writeLog + len, " DATASAVEPATH=%s", savedfile);
-        }
-    }
-    
-    bool bRep = false;
-    if(alarmType == g_uLangServType && g_mLangReportControl.find(configID) != g_mLangReportControl.end() && g_mLangReportControl[configID] <= confidence){
-        bRep = true;
-    }
-
-    if(bRep){
-        if(alarmType == g_uLangServType) result.m_iTargetID |= 0x200;
-        g_ReportResultAddr(g_iModuleID, &result);
-        if(alarmType == g_uLangServType) result.m_iTargetID &= ~0x200;
-        const char* debugDir = "ioacas/debug/";
-        if(if_directory_exists(debugDir)){
-            char wholePath[MAX_PATH];
-            sprintf(wholePath, "%sMessage_%lu", debugDir, pid);
-            save_binary_data(wholePath, &result, sizeof(CDLLResult), result.m_pDataUnit[0], sizeof(WavDataUnit));
-        }
-    }
-    return true;
-}
-bool saveWave(char *pData, unsigned len, const char *saveFileName)
-{
-    bool ret = false;
-    FILE *fp = fopen(saveFileName, "wb");
-    if(NULL != fp){
-        PCM_HEADER pcmheader;
-        initialize_wave_header(&pcmheader, len);
-        int retw = fwrite(&pcmheader, sizeof(PCM_HEADER), 1, fp);
-        if(retw != 1){
-            LOG_WARN(g_logger, "fail to save data to file, filename: "<< saveFileName);
-        }
-        else{
-            fwrite(pData, 1, len, fp);
-            ret = true;
-        }
-        fclose(fp);
-    }
-    return ret;
-}
-static inline void debugstring_newreported(const char * head)
-{
-	char tmpcz[500];
-	sprintf(tmpcz, "%s, newreported [%lu] ", head, NewReportedID.size());
-	string tmpStr = tmpcz;
-	LOG_DEBUG(g_logger, tmpStr.c_str());
-}
-
-#endif
 

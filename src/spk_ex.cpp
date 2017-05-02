@@ -163,20 +163,6 @@ void spkex_getAllSpks(vector<const SpkInfo*> &outSpks)
 bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
 {
     SLockHelper mylock(&g_SpkInfoRwlock);
-    /*
-    string mdlpath = g_strSpkMdlDir + spk->toStr();
-    TITStatus err = TIT_SPKID_SAVE_MDL_IVEC(mdlData, mdlpath.c_str());
-    if(err != StsNoError){
-        SLOGE_FMT("in addSpeaker, failed to save arrival data as speaker model file. path=%s; mdlLen=%u; error: %d.", mdlpath.c_str(), mdlLen, err);
-        return false;
-    }
-    void * pData;
-    err = TIT_SPKID_LOAD_MDL_IVEC(pData, mdlpath.c_str());
-    if(err != StsNoError){
-        SLOGE_FMT("in addSpeaker, failed to load model from file. file=%s; error: %d.", mdlpath.c_str(), err);
-        return false;
-    }
-    */
 
     char *pData = (char*)malloc(g_ModelSize);
     TIT_RET_CODE err = TIT_Feat_To_Model(mdlData, pData);
@@ -199,6 +185,7 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
             else{
                 delete oldSpk;
             }
+            g_mapAllSpks[spkId].spk = spk;
         }
     }
     else{
@@ -327,7 +314,7 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
         }
     }
     */
-    int target;
+    int target = -1;
     float* scores = &vecScores[0];
     TIT_RET_CODE err = TIT_SCR_Buf_AddCfd_CutSil_Cluster(pcmData, smpNum, const_cast<void **>(&g_vecSpeakerModels[0]), scores, g_vecSpeakerModels.size(), target
         );

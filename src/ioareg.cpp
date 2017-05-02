@@ -316,11 +316,35 @@ void ioareg_maintain_procedure(time_t curTime)
     }
 }
 
+static FILE *g_OfflineTaskFd;
+static bool getonetask(const char* szDir, const char* filename)
+{
+	const char* sufst = strrchr(filename, '.');
+	if(sufst == NULL) return false;
+	sufst ++;
+	if(strcmp(sufst, "param") != 0) return false;
+	fprintf(g_OfflineTaskFd, "add %s\n", filename);
+	return true;
+}
+
+void gen_task_with_local_samples()
+{
+	string taskpath = "ioacas/SpkModelTrans/tasklist";
+	g_OfflineTaskFd = fopen(taskpath.c_str(), "w");
+	if(g_OfflineTaskFd == NULL){
+LOGFMT_WARN(g_logger, "in gen_task_with_local_samples, failed to create file %s.", taskpath.c_str());
+	return;
+}
+	int iRet = procFilesInDir("ioacas/SpkModelTrans", getonetask);
+	LOGFMT_INFO(g_logger, "in gen_task_with_local_samples, have registered %d local samples.", iRet);
+	fclose(g_OfflineTaskFd);
+}
+
 bool ioareg_init()
 {
-	ScoreConfig ssCfg;
+    ScoreConfig ssCfg;
     ssCfg.m_0Value = 0;
-	ssCfg.m_100Value = 100;
+    ssCfg.m_100Value = 100;
     Config_getValue(&g_AutoCfg, "", "saveAllTopDir", g_szAllPrjsDir);
     Config_getValue(&g_AutoCfg, "", "saveDebugTopDir", g_szDebugBinaryDir);
     Config_getValue(&g_AutoCfg, "", "ifUseVAD", g_bUseVAD);
@@ -336,30 +360,30 @@ bool ioareg_init()
     Config_getValue(&g_AutoCfg, "spk", "hundredScore", ssCfg.m_100Value);
     Config_getValue(&g_AutoCfg, "spk", "defaultThreshold", defaultSpkScoreThrd);
     unsigned tmpLen = strlen(g_szAllPrjsDir);
-	if(tmpLen > 0 && g_szAllPrjsDir[tmpLen - 1] != '/'){
-		g_szAllPrjsDir[tmpLen] = '/';
-		g_szAllPrjsDir[tmpLen + 1] = '\0';
-	}
+    if(tmpLen > 0 && g_szAllPrjsDir[tmpLen - 1] != '/'){
+        g_szAllPrjsDir[tmpLen] = '/';
+        g_szAllPrjsDir[tmpLen + 1] = '\0';
+    }
 
-	g_StatusLogger = g_Log4zManager->createLogger("status");
-#define LOG4Z_VAR(x) << #x "=" << x << "\n"
+    g_StatusLogger = g_Log4zManager->createLogger("status");
+    #define LOG4Z_VAR(x) << #x "=" << x << "\n"
     LOG_INFO(g_logger, "====================config====================\n" 
-            LOG4Z_VAR(g_szAllPrjsDir)
-            LOG4Z_VAR(g_szDebugBinaryDir)
-            LOG4Z_VAR(g_ThreadNum)
-            LOG4Z_VAR(g_bUseVAD)
-            LOG4Z_VAR(g_bUseLid)
-            LOG4Z_VAR(g_bUseMusicDetect)
-            LOG4Z_VAR(g_iVADPrecent)
-            LOG4Z_VAR(szMusicDetectCfg)
-            LOG4Z_VAR(szLIDCfgDir)
-            LOG4Z_VAR(g_bUseSpk)
-            LOG4Z_VAR(g_bSpkUseVad)
-            LOG4Z_VAR(g_bSpkUseMCut)
-            LOG4Z_VAR(g_iMusicPrecent)
-            LOG4Z_VAR(defaultSpkScoreThrd)
-            LOG4Z_VAR(ssCfg.m_0Value)
-            LOG4Z_VAR(ssCfg.m_100Value)
+             LOG4Z_VAR(g_szAllPrjsDir)
+             LOG4Z_VAR(g_szDebugBinaryDir)
+             LOG4Z_VAR(g_ThreadNum)
+             LOG4Z_VAR(g_bUseVAD)
+             LOG4Z_VAR(g_bUseLid)
+             LOG4Z_VAR(g_bUseMusicDetect)
+             LOG4Z_VAR(g_iVADPrecent)
+             LOG4Z_VAR(szMusicDetectCfg)
+             LOG4Z_VAR(szLIDCfgDir)
+             LOG4Z_VAR(g_bUseSpk)
+             LOG4Z_VAR(g_bSpkUseVad)
+             LOG4Z_VAR(g_bSpkUseMCut)
+             LOG4Z_VAR(g_iMusicPrecent)
+             LOG4Z_VAR(defaultSpkScoreThrd)
+             LOG4Z_VAR(ssCfg.m_0Value)
+             LOG4Z_VAR(ssCfg.m_100Value)
             );
 
     int err = pthread_key_create(&g_RecWavBufsKey, free);
@@ -377,6 +401,8 @@ bool ioareg_init()
             LOG_INFO(g_logger, "finish initializing spk engine.");
         }
         getScoreFunc(&ssCfg);
+//TODO generate offline task with all samples in SpkModelTrans.
+gen_task_with_local_samples();
     }
     if(g_bSpkUseVad){
         if(!InitVADCluster(szSpkVADCfg)){
@@ -385,40 +411,33 @@ bool ioareg_init()
         }
         LOG_INFO(g_logger, "finish initializing vad cluster engine.");
     }
-if(g_bSpkUseMCut){
-	if(!MusicCut_Initial(szSpkMscCfg, g_ThreadNum)){
-	LOG_ERROR(g_logger, "fail to initail music engine.");
-	return false;
-	}
-}
+    if(g_bSpkUseMCut){
+        if(!MusicCut_Initial(szSpkMscCfg, g_ThreadNum)){
+            LOG_ERROR(g_logger, "fail to initail music engine.");
+            return false;
+        }
+    }
 
     initLID(g_ThreadNum);
-	//g_pthread_id = (pthread_t *)malloc(sizeof(pthread_t) * (g_ThreadNum));
+    //g_pthread_id = (pthread_t *)malloc(sizeof(pthread_t) * (g_ThreadNum));
 
     g_RecSpaceArr = new RecogThreadSpace[g_ThreadNum];
     for (int i = 0; i < g_ThreadNum; ++i)
-	{
-		pthread_attr_t threadAttr;
-		pthread_attr_init(&threadAttr);
+    {
+        pthread_attr_t threadAttr;
+        pthread_attr_init(&threadAttr);
         //TODO why specify stack size.
-		pthread_attr_setstacksize(&threadAttr, 2080 * 1024); // 120*1024
-		//pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
+        pthread_attr_setstacksize(&threadAttr, 2080 * 1024); // 120*1024
+        //pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
         g_RecSpaceArr[i].threadIdx = i;
-		int retc = pthread_create(&g_RecSpaceArr[i].threadId, &threadAttr, IoaRegThread, &g_RecSpaceArr[i]);
-		if(retc != 0){
-			LOG_ERROR(g_logger, "fail to create recognition thread, index "<< g_RecSpaceArr[i].threadIdx);
+        int retc = pthread_create(&g_RecSpaceArr[i].threadId, &threadAttr, IoaRegThread, &g_RecSpaceArr[i]);
+        if(retc != 0){
+            LOG_ERROR(g_logger, "fail to create recognition thread, index "<< g_RecSpaceArr[i].threadIdx);
             exit(1);
-		}
-		pthread_attr_destroy(&threadAttr);
-	}
+        }
+        pthread_attr_destroy(&threadAttr);
+    }
 
-/*
-string g_strExtraSpkModelDir = "ioacas/OrigSpkModel";
-if(if_directory_exists(g_strExtraSpkModelDir.c_str())){
-	int retspkcfg = procFilesInDir(g_strExtraSpkModelDir.c_str(), addSpkPerFile);
-	LOGFMT_INFO(g_logger, "in ioareg_init, loading prepared spk models in %s, SPKCount=%d.", g_strExtraSpkModelDir.c_str(), retspkcfg);
-}
-*/
 
     return true;
 }

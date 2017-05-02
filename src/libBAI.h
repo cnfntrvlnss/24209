@@ -11,7 +11,8 @@
 
 #define BAI_RETRIEVAL_TYPE_RETIEVAL   0
 #define BAI_RETRIEVAL_TYPE_PARTLY     1
-#define BAI_RETRIEVAL_TYPE_PARTLY_VAD 2
+#define BAI_RETRIEVAL_TYPE_PARTLY_VAD 2 
+#define BAI_RETRIEVAL_TYPE_VAD        3 
 
 #ifdef __cplusplus
 extern "C"
@@ -108,11 +109,13 @@ Step 5.
 ******************************************************/
 	LIBBAI_API BAI_Code BAI_Retrieval(BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppThreadIndex);  //whole template retrieval. 
     
+	LIBBAI_API BAI_Code BAI_Retrieval_VAD(BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppEngineHandle);
+	
 	LIBBAI_API BAI_Code BAI_Retrieval_Partly(BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppThreadIndex);  //partly template retrieval.
     
 	LIBBAI_API BAI_Code BAI_Retrieval_Partly_VAD(BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppThreadIndex);   //using VAD to remove silence segment in template audio.
 
-	LIBBAI_API BAI_Code BAI_Retrieval_(int typeRetrieval, char* pathIndex, BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppThreadIndex);   //using VAD to remove silence segment in template audio.
+    LIBBAI_API BAI_Code BAI_Retrieval_(int typeRetrieval, char* pathIndex, BAI_InputItem* pstInputItems, const int kiInputNum, BAI_ResultList*& rpstResultLists, void** ppThreadIndex);
 	
 	// Step6. close processing thread.
 	LIBBAI_API BAI_Code BAI_Close(void** ppThreadIndex);

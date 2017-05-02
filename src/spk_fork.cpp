@@ -16,7 +16,7 @@
 using namespace std;
 
 #define OUTPUT_FORK(x) fprintf(stderr, #x " in %s.\n", __FILE__)
-/*
+#if 0
 bool InitVADCluster(const char* CfgPath)
 {
     OUTPUT_FORK(InitVADCluster);
@@ -40,7 +40,7 @@ bool FreeVADCluster()
     OUTPUT_FORK(FreeVADCluster);
     return true;
 }
-*/
+#endif
 
 #ifndef LIDFORK
 bool MusicCut_Initial(char* CfgFile,int ThreadNum)

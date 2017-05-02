@@ -92,11 +92,26 @@ public:
     void init(){
         bAlloc = false;
     }
+    void getDataSegment(std::vector<DataBlock>& data, unsigned idx, unsigned offset, unsigned endIdx=0, unsigned endOffset=0){
+        AutoLock lock(m_BufferLock);
+        idx += 1;
+        if(endIdx == 0){
+            endIdx = this->arrUnits.size() - 1;
+            endOffset = this->arrUnits[endIdx].len;
+        }
+        else{
+            endIdx += 1;
+        }
+        if(endIdx < idx) return;
+        getDataSegmentIn(idx, offset, endIdx, endOffset, data);
+    }
+    /*
     void getDataSegment(unsigned idx, unsigned offset, unsigned endIdx, unsigned endOffset, std::vector<DataBlock>& data)
-{
-    AutoLock lock(m_BufferLock);
-    getDataSegmentIn(idx, offset, endIdx, endOffset, data);
-}
+    {
+        AutoLock lock(m_BufferLock);
+        getDataSegmentIn(idx, offset, endIdx, endOffset, data);
+    }
+    */
 
 private:
     ProjectBuffer(const ProjectBuffer& );
@@ -175,7 +190,7 @@ struct ProjectSegment{
 };
 
 bool dispatchOneProj(ProjectBuffer* proj);
-typedef bool (*FuncPushProj)(ProjectBuffer* prj);
+typedef int (*FuncPushProj)(ProjectBuffer* prj);
 void getBufferStatus(std::string &outstr);
 bool init_bufferglobal(BufferConfig buffConfig, FuncPushProj pushProjAddr = NULL);
 void rlse_bufferglobal();

@@ -440,7 +440,7 @@ bool BampMatchObject::bamp_match(std::vector<BampMatchParam>& allData)
 
     assert(intoEngSize  == dataidxarr.size());
     BAI_ResultList *pRes = NULL;
-    BAI_Code err = BAI_Retrieval_Partly_VAD(intoEng, intoEngSize, pRes, &(this->hdl));
+    BAI_Code err = BAI_Retrieval_VAD(intoEng, intoEngSize, pRes, &(this->hdl));
     if(err != BAI_OK){
         BLOGE("in bamp_match failed to call BAI_Retrieval_Partly, err: %d.", err);
         delete [] intoEng;
