@@ -6,15 +6,19 @@
  ************************************************************************/
 
 #include "libBAI_ex.h"
+#include "dllSRVADCluster_lshj.h"
 #include "commonFunc.h"
 #include "wav/waveinfo.h"
 #include "utilites.h"
 #include "ProjectBuffer.h"
-#include "ioareg.h"
 #include "../../serv242_09/src/audiz/audizcli_p.h"
 
 #include <set>
 
+using namespace std;
+using namespace zen4audio;
+
+static const unsigned BLOCKSIZE = 3 * 16000;
 //TODO 这两个标记变量需要加锁.
 static bool g_bInitialized = false;
 static unsigned int g_iModuleID;
@@ -57,8 +61,8 @@ bool g_bSaveAfterRec=false; // when after processing, for project ID.
 LoggerId g_logger;
 string g_strIp;
 
-std::map<unsigned long,ProjRecord_t> NewReportedID;
-pthread_mutex_t g_lockNewReported = PTHREAD_MUTEX_INITIALIZER;
+//std::map<unsigned long,ProjRecord_t> NewReportedID;
+//pthread_mutex_t g_lockNewReported = PTHREAD_MUTEX_INITIALIZER;
 
 //////////////////---bamp---
 //NOTE: only support 3 secs segment.
@@ -76,13 +80,9 @@ int GetDLLVersion(char *p, int &length)
     return 1;
 }
 
+/*
 void* IoaRegThread(void *pvParam);
 
-
-/*****************
- * param str eg: 11->1;10->2;
- * return list eg:[(11,1), (10,2)]
- */
 static std::vector<std::pair<unsigned char, unsigned char> > parseLangReportsFromStr(const char*strLine)
 {
 	char tmpLine[256];
@@ -104,9 +104,6 @@ static std::vector<std::pair<unsigned char, unsigned char> > parseLangReportsFro
 	return retm;
 }
 
-/**
- * reverse process of the func above.
- */
 static std::string formLangReportsStr(const std::vector<std::pair<unsigned char, unsigned char> >& langReports)
 {
 	ostringstream oss;
@@ -140,6 +137,7 @@ static std::string formReportFilterStr(const std::map<int, int> &filter)
     }
     return oss.str();
 }
+*/
 
 struct SpkMdlStVecImpl: public SpkMdlStVec, SpkMdlStVec::iterator
 {
@@ -213,6 +211,8 @@ static void initGlobal(BufferConfig &myBufCfg)
 }
 
 static void * bampMatchThread(void *);
+static void * KwMatchThread(void *);
+static void *dummyRecThread(void *);
 static void *ioacas_maintain_procedure(void *);
 static void reportBampResultSeg(BampResultParam param, ostream& oss);
 static int addBampProj(ProjectBuffer *proj);
@@ -233,14 +233,28 @@ int InitDLL(int iPriority,
     g_ReportResultAddr = func;
     
     BufferConfig buffconfig;
-    buffconfig.m_uBlockSize = 48000;
+    buffconfig.m_uBlockSize = BLOCKSIZE;
     buffconfig.m_uBlocksMin = 20 * 600;
     buffconfig.m_uBlocksMax = 20 * 600;
     initGlobal(buffconfig);
 
     init_bufferglobal(buffconfig, addBampProj);
+    /*
     if(!ioareg_init()){
         return 1;
+    }
+    */
+    {
+        pthread_attr_t threadAttr;
+        pthread_attr_init(&threadAttr);
+        pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
+        pthread_t bmThdId;
+        int retc = pthread_create(&bmThdId, &threadAttr, dummyRecThread, NULL);
+        if(retc != 0){
+            LOG_ERROR(g_logger, "fail to create dummyRecThread thread!");
+            exit(1);
+        }
+        pthread_attr_destroy(&threadAttr);
     }
 
     if(g_bUseBamp){
@@ -256,6 +270,18 @@ int InitDLL(int iPriority,
             int retc = pthread_create(&bmThdId, &threadAttr, bampMatchThread, NULL);
             if(retc != 0){
                 LOG_ERROR(g_logger, "fail to create BampMatch thread!");
+                exit(1);
+            }
+            pthread_attr_destroy(&threadAttr);
+        }
+        {
+            pthread_attr_t threadAttr;
+            pthread_attr_init(&threadAttr);
+            pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
+            pthread_t bmThdId;
+            int retc = pthread_create(&bmThdId, &threadAttr, KwMatchThread, NULL);
+            if(retc != 0){
+                LOG_ERROR(g_logger, "fail to create KwMatchThread thread!");
                 exit(1);
             }
             pthread_attr_destroy(&threadAttr);
@@ -356,9 +382,9 @@ struct KwMatchSpace{
     explicit KwMatchSpace(ProjectBuffer *p):
         prj(p), curStIdx(0), dataLen(0)
     {
-        projTime = prj->getPrjTime();
+        prjTime = prj->getPrjTime();
         bufSize = 16000 * 6;
-        afterVADBuf = (char*)malloc(bufSize);
+        afterVADBuf = (char*)malloc(bufSize + BLOCKSIZE);
         assert(afterVADBuf != NULL);
         //pthread_mutex_init(&anoKwLock, NULL);
     }
@@ -368,14 +394,9 @@ struct KwMatchSpace{
         returnBuffer(prj);
     }
     
-    void appendData(vector<DataBlock> freshData){
-        //pthread_mutex_lock(&anoKwLock);
-        prjData.insert(prjData.end(), freshData.begin(), freshData.end());
-        //pthread_mutex_unlock(&anoKwLock);
-    }
-
+    void saveAudio();
     ProjectBuffer *prj;
-    struct timeval projTime;
+    struct timeval prjTime;
     vector<DataBlock> prjData;
     unsigned curStIdx;
     char *afterVADBuf;
@@ -383,6 +404,21 @@ struct KwMatchSpace{
     unsigned dataLen;
     //pthread_mutex_t anoKwLock;
 };
+
+static string g_strKwAudioRoot = "debug";
+void KwMatchSpace::saveAudio()
+{
+    char savedfile[MAX_PATH];
+    char vadedfile[MAX_PATH];
+    gen_spk_save_file(savedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID);
+    strcpy(vadedfile, savedfile);
+    sprintf(strrchr(vadedfile, '.'), "%s", ".raw");
+    FILE *fp = fopen(vadedfile, "wb");
+    assert(fp != NULL);
+    fwrite(afterVADBuf, 1, dataLen, fp);
+    fclose(fp);
+}
+
 static map<unsigned long,  KwMatchSpace*> g_AllProjs4Kw;
 static pthread_mutex_t g_AllProjs4KwLocker = PTHREAD_MUTEX_INITIALIZER;
 
@@ -416,7 +452,42 @@ static void delKwSpace(KwMatchSpace* kwsp)
 
 void *KwMatchThread(void *)
 {
-    
+    while(true){
+        KwMatchSpace *curSp = getNextKwSpace();
+        if(curSp == NULL){
+            sleep(1);
+            continue;
+        }
+        vector<DataBlock> &prjdata = curSp->prjData;
+        unsigned &curidx = curSp->curStIdx;
+        char *&vadbuf = curSp->afterVADBuf;
+        unsigned &vadlen = curSp->dataLen;
+        const unsigned &vadbufsize = curSp->bufSize;
+
+        curSp->prj->getDataSegment(prjdata, prjdata.size(), 0);
+        while(curidx < prjdata.size()){
+            short *inSmp = reinterpret_cast<short*>(prjdata[curidx].getPtr());
+            unsigned inlen = prjdata[curidx].len / 2;
+            short *bufSt = reinterpret_cast<short*>(vadbuf + vadlen);
+            unsigned leftsize = (vadbufsize - vadlen) / 2;
+            int vadstep = leftsize;
+            if(VADBuffer(true, inSmp, inlen, bufSt, vadstep)){
+                assert(vadstep >= 0);
+                vadlen += vadstep * 2;
+                if(vadlen > vadbufsize){
+                    //TODO pass through systhesized speech recognition.
+                    curSp->saveAudio();
+                    break;
+                }
+            }
+            
+            curidx++;
+        }
+        
+        if(vadlen >= vadbufsize || curSp->prj->getFull()){
+            delKwSpace(curSp);
+        }
+    }
 }
 
 static map<unsigned long, ProjectBuffer*> g_AllProjs4Bamp;
@@ -528,7 +599,7 @@ int CloseDLL()
             return 1;
         }
     }
-    ioareg_rlse();
+    //ioareg_rlse();
     rlse_bufferglobal();
     return 0;
 }
@@ -710,15 +781,6 @@ void *ioacas_maintain_procedure(void *)
         time(&cur_time);
 
         if(true){
-            //maitain project filter.
-            pthread_mutex_lock(&g_lockNewReported);
-            static time_t projectfilterlasttime = 0;
-            if(cur_time   > 3600 + projectfilterlasttime){
-                projectfilterlasttime = cur_time;
-            }
-            pthread_mutex_unlock(&g_lockNewReported);
-        }
-        if(true){
             //update some configurations.
             static time_t lasttime;
             if(cur_time > 3 + lasttime){
@@ -727,9 +789,69 @@ void *ioacas_maintain_procedure(void *)
                 }
             }
         }
-        ioareg_maintain_procedure(cur_time);
+        //ioareg_maintain_procedure(cur_time);
         sleep(3);
     }
     return NULL;
 }
 
+static bool saveWave(vector<DataBlock>& prjData, const char *savedfile)
+{
+    FILE *fp = fopen(savedfile, "ab");
+    if(fp == NULL){
+        LOG_WARN(g_logger, "fail to open file "<< savedfile<< " error: "<< strerror(errno));
+        return false;
+    }
+    bool ret = false;
+    PCM_HEADER pcmheader;
+    initialize_wave_header(&pcmheader, 0);
+    int retw = fwrite(&pcmheader, sizeof(PCM_HEADER), 1, fp);
+    if(retw != 1){
+        LOG_WARN(g_logger, "fail to save data to file, filename: "<< savedfile);
+        fclose(fp);
+        return ret;
+    }
+    unsigned len = 0;
+    for(unsigned idx=0; idx < prjData.size(); idx++){
+        len + prjData[idx].len;
+        fwrite(prjData[idx].getPtr(), 1, prjData[idx].len, fp);
+        
+    }
+    ret = true;
+    fclose(fp);
+    return ret;
+}
+
+static char g_szAllPrjsDir[MAX_PATH]; //save all projects
+static pthread_mutex_t g_AllProjsDirLock = PTHREAD_MUTEX_INITIALIZER;
+void *dummyRecThread(void *)
+{
+    ProjectBuffer *ptrBuf = NULL;
+    while(true){
+        ptrBuf = obtainFullBufferTimeout(-1u);
+        if (ptrBuf != NULL)
+        {
+            struct timeval cur_time = ptrBuf->getPrjTime();
+            ptrBuf->startMainReg();
+            vector<DataBlock> prjData;
+            ptrBuf->getData(prjData);
+            //save all projects, mainly for debug.
+            pthread_mutex_lock(&g_AllProjsDirLock);
+            size_t tmpLen = strlen(g_szAllPrjsDir);
+            if(tmpLen > 0 && if_directory_exists(g_szAllPrjsDir)){
+                char savedfile[MAX_PATH];
+                gen_spk_save_file(savedfile, g_szAllPrjsDir, NULL, cur_time.tv_sec, ptrBuf->ID, NULL, NULL, NULL);
+                pthread_mutex_unlock(&g_AllProjsDirLock);
+                if(!saveWave(prjData, savedfile)){
+                }
+            }
+            else{
+                pthread_mutex_unlock(&g_AllProjsDirLock);
+            }
+            ptrBuf->finishMainReg();
+            returnBuffer(ptrBuf);
+        }
+    }
+
+    return NULL;
+}

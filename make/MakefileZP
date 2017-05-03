@@ -13,12 +13,12 @@ TESTDIR=../testZP/ioacas/
 
 VPATH=../src/:../src/protosrc/2.6/:../src/wav/:../../serv242_09/src/:../../serv242_09/src/audiz/
 
-CPPNAMES:=interfacezp.cpp ioareg.cpp commonFunc.cpp log4z.cpp ProjectBuffer.cpp utilites.cpp socket_ex.cpp
-CPPNAMES += dllVAD_dup.cpp MusicDetect_dup.cpp TLI_API_dup.cpp lid_fork.cpp
-CPPNAMES += spk_ex.cpp spk_fork.cpp #audizcli_p.cpp
+CPPNAMES:=interfacezp.cpp commonFunc.cpp log4z.cpp ProjectBuffer.cpp utilites.cpp socket_ex.cpp audizcli_p.cpp
+#CPPNAMES += dllVAD_dup.cpp MusicDetect_dup.cpp TLI_API_dup.cpp lid_fork.cpp
+#CPPNAMES += spk_ex.cpp spk_fork.cpp
 CPPNAMES+= waveinfo.cpp Voc2Wav.cpp WaveFunc.cpp
 CPPNAMES += FixedAudioModel.pb.cc libBAI_ex.cpp #libBAI_fork.cpp
-CNAMES := #apueclient.c
+CNAMES := apueclient.c
 PROGNAME=libIOACAS.so
 LDLIBS +=-L${TESTDIR} -lprotobuf -lBAMP -lso_front_end_VAD #-ldllSRVADCluster##-lSpeakerRecogAPI  -lTLI_API -lNewVAD -lMusicDetect
 LDFLAGS += -lpthread -shared

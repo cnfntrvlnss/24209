@@ -6,12 +6,7 @@
  ************************************************************************/
 
 #include "libBAI_ex.h"
-//#define USE_SPK_VAD
-#ifdef USE_SPK_VAD
-#include "dllSRVADCluster.h"
-#else
 #include "dllSRVADCluster_lshj.h"
-#endif
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -691,11 +686,7 @@ bool bamp_init(SummitBampResult callbck, unsigned vadParallelNum, float afterVad
     int retcrt;
     g_uPreBampEngVADTasksLen = vadParallelNum;
     if(g_uPreBampEngVADTasksLen > 0){
-        #ifdef USE_SPK_VAD
-        if(!InitVADCluster("ioacas/VAD_SID.cfg")){
-        #else
         if(!InitVADCluster_File()){
-        #endif
             BLOGE("in bamp_init, faile to initVADCluster_File.");
             g_uPreBampEngVADTasksLen = 0;
         }

@@ -73,7 +73,7 @@ static std::string clockoutput_end(){return ""}
 bool if_directory_exists(const char *dir, bool bForce = false);
 int save_binary_data(const char *filePath, const void* ptr, size_t num, ...);
 
-bool  gen_spk_save_file(char *savedname, const char *topDir, const char *subDir, time_t curtime, unsigned long id, const unsigned short *typeId, const unsigned *userId, const int *confidence);
+bool  gen_spk_save_file(char *savedname, const char *topDir, const char *subDir, time_t curtime, unsigned long id, const unsigned short *typeId = NULL, const unsigned *userId = NULL, const int *confidence = NULL);
 bool saveWave(char *pData, unsigned len, const char *saveFileName);
 
 std::string saveTempBinaryData(struct timeval curtime, unsigned long pid, char* data, unsigned len);

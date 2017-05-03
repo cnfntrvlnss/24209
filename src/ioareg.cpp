@@ -58,7 +58,7 @@ private:
     RecogThreadSpace& operator=(const RecogThreadSpace&);
 };
 
-char g_szAllPrjsDir[MAX_PATH]; //save all projects, when after processing.
+char g_szAllPrjsDir[MAX_PATH]; //save all projects
 pthread_mutex_t g_AllProjsDirLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t g_RecWavBufsKey;
 //static pthread_t *g_pthread_id = NULL;
