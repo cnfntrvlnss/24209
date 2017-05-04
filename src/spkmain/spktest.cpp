@@ -201,7 +201,7 @@ int main(int argc, char *argv[])
     }
     finishOpenMusicCut();
     */
-    if(!spkex_init("SpkSRE.cfg")){
+    if(!spkex_init("ioacas/runSpk.cfg")){
         exit(1);
     }
     for(size_t idx = 0; idx < vecSpks.size(); idx++){

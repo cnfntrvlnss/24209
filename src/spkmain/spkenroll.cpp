@@ -15,7 +15,8 @@
 
 #include "../wav/wav.h"
 #include "../utilites.h"
-#include "../TIT_SPKID_OFFL_API.h"
+//#include "../TIT_SPKID_OFFL_API.h"
+#include "../interface.h"
 #include<iostream>
 using namespace std;
 
@@ -29,6 +30,7 @@ char g_szModelDir[MAX_PATH];
 #define DEBUG_LOG(FMT, ...) if(g_bDebugMode) fprintf(stderr, FMT "\n", ##__VA_ARGS__);
 #define ERROR_LOG(FMT, ...) fprintf(stderr, "ERROR " FMT "\n", ##__VA_ARGS__);
 
+/*
 bool saveSpkMdl(const char* mdlfile, void *data, unsigned size)
 {
     FILE *fp = fopen(mdlfile, "wb");
@@ -39,6 +41,7 @@ bool saveSpkMdl(const char* mdlfile, void *data, unsigned size)
     fclose(fp);
     return true;
 }
+*/
 bool parseGlobal(int argc, char *argv[])
 {
     while(true){
@@ -68,14 +71,21 @@ bool parseGlobal(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
     if(!parseGlobal(argc, argv)) exit(1);
+    TITStatus titret = TIT_SPKID_INIT(g_szCfgFile);
+    if(titret != StsNoError){
+        ERROR_LOG("failed to call TIT_SPKID_INIT, error: %d.", titret);
+        exit(1);
+    }
+    /*
     int mdlsize, featsize, indexsize;
     TIT_RET_CODE err = TIT_SPKID_Init(g_szCfgFile, g_szModelDir, featsize, mdlsize, indexsize);
     if(err != TIT_SPKID_SUCCESS){
         ERROR_LOG("failed to tit_spkid_init, TitError: %d", err);
         exit(1);
     }
+    */
 
-    vector<Wavs> wavs;
+    vector<WAVE> wavs;
     char *st = g_szInputFiles;
     bool bFinished = false;
     while(!bFinished){
@@ -99,7 +109,7 @@ int main(int argc, char *argv[])
             ERROR_LOG("failed to load wave from file: %s.", curfile.c_str());
             continue;
         }
-        wavs.push_back(Wavs());
+        wavs.push_back(WAVE());
         wavs.back().wavbuf = wavbuf1;
         wavs.back().wavlen = wavlen1;
         DestroyWav(wavbuf2, wavlen2);
@@ -108,6 +118,19 @@ int main(int argc, char *argv[])
         ERROR_LOG("no wave data left to enroll speaker %s.", g_szOutFile);
     }
 
+    //TODO how to free spkmdl.
+    void *spkmdl = NULL;
+    titret = TIT_SPKID_TRN_SPK_MDL_IVEC_VAD(&wavs[0], wavs.size(), spkmdl);
+    if(titret != StsNoError){
+        ERROR_LOG("failed to call TIT_SPKID_TRN_SPK_MDL_IVEC_VAD, error: %d.", titret);
+    }
+    titret = TIT_SPKID_SAVE_MDL_IVEC(spkmdl, g_szOutFile);
+    if(titret != StsNoError){
+        ERROR_LOG("failed to call TIT_SPKID_SAVE_MDL_IVEC, error: %d.", titret);
+    }
+    TIT_SPKID_EXIT();
+
+    /*
     void *spkmdl = malloc(featsize);
     err = TIT_TRN_Model_CutAll(&wavs[0], wavs.size(), spkmdl);
     if(err != TIT_SPKID_SUCCESS){
@@ -117,4 +140,5 @@ int main(int argc, char *argv[])
     saveSpkMdl(g_szOutFile, spkmdl, featsize);
     free(spkmdl);
     TIT_SPKID_Exit();
+    */
 }

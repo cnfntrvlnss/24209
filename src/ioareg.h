@@ -49,7 +49,7 @@ public:
     { }
     string toStr()const{
         ostringstream oss;
-        oss << std::dec<< spkId<<"_"<< static_cast<int>(servType)<< "_" << harmLevel<< ".param";
+        oss <<std::showbase << std::dec<< spkId<<"_"<< std::hex<< static_cast<int>(servType)<< std::dec<< "_" << harmLevel<< ".param";
         return oss.str();
     }
     bool fromStr(const char* strSpk);

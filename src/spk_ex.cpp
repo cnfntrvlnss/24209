@@ -19,7 +19,8 @@
 #include <map>
 #include <set>
 
-#include "TIT_SPKID_OFFL_API.h"
+#include "interface.h"
+//#include "TIT_SPKID_OFFL_API.h"
 
 using namespace std;
 #define SLOGE_FMT(fmt, ...) fprintf(stderr, "ERROR " fmt "\n", ##__VA_ARGS__)
@@ -121,15 +122,15 @@ struct SpkCheckBook{
     set<SpkInfo*> oldSpks;
 };
 
-static int g_FeatSize;
-static int g_ModelSize;
+//static int g_FeatSize;
+//static int g_ModelSize;
 vector<void*> g_vecSpeakerModels;
 vector<unsigned long> g_vecSpeakerIDs;
 map<unsigned long, SpkCheckBook > g_mapAllSpks;
 static float spkex_ScoreThreshold = 0.0001;
 pthread_rwlock_t g_SpkInfoRwlock = PTHREAD_RWLOCK_INITIALIZER;
 
-static string g_strSpkMdlDir = "ioacas/SpkModel/";
+//static string g_strSpkMdlDir = "ioacas/SpkModel/";
 
 class SLockHelper{
 public:
@@ -160,6 +161,49 @@ void spkex_getAllSpks(vector<const SpkInfo*> &outSpks)
     }
 }
 
+bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
+{
+    SLockHelper mylock(&g_SpkInfoRwlock);
+    string fname = "ioacas/SpkModel/";
+    fname += spk->toStr();
+    TITStatus titret = TIT_SPKID_SAVE_MDL_IVEC(mdlData, fname.c_str());
+    if(titret != StsNoError)
+    {
+        SLOGE_FMT("in spkex_addSpk, failed to call TIT_SPKID_SAVE_MDL_IVEC, error: %d.", titret);
+        return false;
+    }
+    const unsigned long &spkId = spk->spkId;
+    int spkIdx = -1;
+    if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end()){
+        SpkInfo *oldSpk = g_mapAllSpks[spkId].spk;
+        if(oldSpk != NULL){
+            spkIdx = g_mapAllSpks[spkId].idx;
+            TIT_SPKID_DEL_MDL(g_vecSpeakerModels[spkIdx]);
+        }
+        if(oldSpk != spk){
+            if(oldSpk->cnter->get() > 0){
+                g_mapAllSpks[spkId].oldSpks.insert(oldSpk);   
+            }
+            else{
+                delete oldSpk;
+            }
+            g_mapAllSpks[spkId].spk = spk;
+        }
+    }
+    else{
+        spkIdx = g_vecSpeakerModels.size();
+        g_mapAllSpks.insert(make_pair(spkId, SpkCheckBook(spk, spkIdx)));
+        g_vecSpeakerModels.push_back(NULL);
+        g_vecSpeakerIDs.push_back(spkId);
+    }
+    titret = TIT_SPKID_LOAD_MDL_IVEC(g_vecSpeakerModels[spkIdx], fname.c_str());
+    if(titret != StsNoError){
+        SLOGE_FMT("in spkex_addSpk, failed to call TIT_SPKID_LOAD_MDL_IVEC, error: %d.", titret);
+        //TODO rollback.
+    }
+    return true;
+}
+/*
 bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
 {
     SLockHelper mylock(&g_SpkInfoRwlock);
@@ -197,7 +241,44 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
     g_vecSpeakerModels[spkIdx] = pData;
     return true;
 }
+*/
 
+bool spkex_rmSpk(unsigned long spkId)
+{
+    SLockHelper mylock(&g_SpkInfoRwlock);
+    if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end() && g_mapAllSpks[spkId].spk != NULL){
+        SpkInfo *&delSpk = g_mapAllSpks[spkId].spk;
+        int spkIdx = g_mapAllSpks[spkId].idx;
+        set<SpkInfo*> oldSpks = g_mapAllSpks[spkId].oldSpks;
+        if(delSpk->cnter->get() == 0){
+            delete delSpk;
+        }
+        else{
+            oldSpks.insert(delSpk);
+        }
+        delSpk = NULL;
+        if(oldSpks.size() == 0){
+            g_mapAllSpks.erase(spkId);
+        }
+        TITStatus titret = TIT_SPKID_DEL_MDL(g_vecSpeakerModels[spkIdx]);
+        if(titret != StsNoError){
+            SLOGE_FMT("in spkex_rmSpk, failed to call TIT_SPKID_DEL_MDL, error: %d.", titret);
+        }
+        g_vecSpeakerModels.erase(g_vecSpeakerModels.begin() + spkIdx);
+        g_vecSpeakerIDs.erase(g_vecSpeakerIDs.begin() + spkIdx);
+        for(unsigned idx=spkIdx; idx < g_vecSpeakerIDs.size(); idx++){
+            unsigned long curid = g_vecSpeakerIDs[idx];
+            assert(g_mapAllSpks.find(curid) != g_mapAllSpks.end());
+            g_mapAllSpks[curid].idx = idx;
+        }
+    }
+    else{
+        SLOGW_FMT("in removeSpeaker, no spk found in spk array. spk: %lu.", spkId);
+    }
+    return true;
+}
+
+/*
 bool spkex_rmSpk(unsigned long spkId)
 {
     SLockHelper mylock(&g_SpkInfoRwlock);
@@ -230,6 +311,7 @@ bool spkex_rmSpk(unsigned long spkId)
     }
     return true;
 }
+*/
 
 unsigned spkex_getAllSpks(std::vector<unsigned long> &spkIds)
 {
@@ -240,18 +322,17 @@ unsigned spkex_getAllSpks(std::vector<unsigned long> &spkIds)
 }
 
 #define MAX_PATH 512
-static char g_ModelPath[MAX_PATH];
-static char g_CfgFile[MAX_PATH];
+//static char g_ModelPath[MAX_PATH];
+//static char g_CfgFile[MAX_PATH];
 bool spkex_init(const char* cfgfile)
 {
     SLockHelper mylock(&g_SpkInfoRwlock);
-    /*
     TITStatus err = TIT_SPKID_INIT(cfgfile);
     if(err != StsNoError){
         SLOGE_FMT("in intSpkRec, fail to initialize spk engine. error: %d; file: %s.", err, cfgfile);
         return false;
     }
-    */
+    /*
     int indexSize;
     snprintf(g_ModelPath, MAX_PATH, ".");
     snprintf(g_CfgFile, MAX_PATH, cfgfile);
@@ -260,6 +341,7 @@ bool spkex_init(const char* cfgfile)
         SLOGE_FMT("in spkex_init, faile to TIT_SPKID_Init, TitError: %d", err);
         return false;
     }
+    */
     return true;
 }
 
@@ -271,16 +353,16 @@ void spkex_rlse()
         spkex_rmSpk(allspks[idx]);
     }
 
-    /*
     TITStatus err = TIT_SPKID_EXIT();
     if(err != StsNoError){
         SLOGE_FMT("in rlseSpkRec, failed to release spk engine. error: %d.\n", StsNoError);
     }
-    */
+    /*
     TIT_RET_CODE err = TIT_SPKID_Exit();
     if(err != TIT_SPKID_SUCCESS){
         SLOGE_FMT("in spkex_rlse faied to TIT_SPKID_Exit, TitError: %d", err);
     }
+    */
 }
 
 /**
@@ -302,7 +384,6 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
     for(size_t idx=0; idx < vecScores.size(); idx ++){
         vecScores[idx] = -1000.0;
     }
-    /*
     TITStatus err = TIT_SPKID_VERIFY_CLUSTER(pcmData, smpNum, const_cast<const void **>(&g_vecSpeakerModels[0]), g_vecSpeakerModels.size(), &vecScores[0]);
     if(err != StsNoError){
         SLOGE_FMT("in processSpkRec, failed in spk engine. error: %d.", err);
@@ -311,9 +392,10 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
     for(size_t idx=0; idx < vecScores.size(); idx++){
         if(score < vecScores[idx]){
             tIdx = idx;
+            score = vecScores[idx];
         }
     }
-    */
+    /*
     int target = -1;
     float* scores = &vecScores[0];
     TIT_RET_CODE err = TIT_SCR_Buf_AddCfd_CutSil_Cluster(pcmData, smpNum, const_cast<void **>(&g_vecSpeakerModels[0]), scores, g_vecSpeakerModels.size(), target
@@ -326,6 +408,7 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
     }
     tIdx = target;
     score = vecScores[tIdx];
+    */
     if(score >= spkex_ScoreThreshold){
         unsigned long spkid = g_vecSpeakerIDs[tIdx];
         spk = g_mapAllSpks[spkid].spk;

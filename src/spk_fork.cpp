@@ -5,8 +5,8 @@
 	> Created Time: Sun 27 Nov 2016 03:57:50 AM EST
  ************************************************************************/
 
-//#include "spkEngine.h"
-#include "TIT_SPKID_OFFL_API.h"
+#include "interface.h"
+//#include "TIT_SPKID_OFFL_API.h"
 #include "dllSRVADCluster.h"
 #include "MusicDetect.h"
 #include <cstdlib>
@@ -40,14 +40,13 @@ bool FreeVADCluster()
     OUTPUT_FORK(FreeVADCluster);
     return true;
 }
-#endif
 
-#ifndef LIDFORK
 bool MusicCut_Initial(char* CfgFile,int ThreadNum)
 {
     OUTPUT_FORK(Musiccut_initial);
     return true;
 }
+
 bool MusicCut(int ThreadIndex,short* src,int iLen,short* &dst,int &oLen)
 {
     int wlen = iLen < oLen ? iLen : oLen;
@@ -55,6 +54,7 @@ bool MusicCut(int ThreadIndex,short* src,int iLen,short* &dst,int &oLen)
     oLen = wlen;
     return true;
 }
+
 bool MusicCut_Free()
 {
     OUTPUT_FORK(musiccut_free);

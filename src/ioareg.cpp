@@ -84,7 +84,7 @@ void* IoaRegThread(void *param);
 ///////////////////---spk---
 static char szSpkMscCfg[MAX_PATH] = "./ioacas/Music.cfg";
 static char szSpkVADCfg[MAX_PATH] = "./ioacas/VAD_SID.cfg";
-static char szSpkCfgFile[MAX_PATH] = "./ioacas/SpkSRE.cfg";
+static char szSpkCfgFile[MAX_PATH] = "./ioacas/runSpk.cfg";
 bool g_bUseSpk = true;
 static bool g_bSpkUseVad = false;
 static bool g_bSpkUseMCut = false;

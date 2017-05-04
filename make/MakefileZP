@@ -20,7 +20,7 @@ CPPNAMES+= waveinfo.cpp Voc2Wav.cpp WaveFunc.cpp
 CPPNAMES += FixedAudioModel.pb.cc libBAI_ex.cpp #libBAI_fork.cpp
 CNAMES := apueclient.c
 PROGNAME=libIOACAS.so
-LDLIBS +=-L${TESTDIR} -lprotobuf -lBAMP -lso_front_end_VAD #-ldllSRVADCluster##-lSpeakerRecogAPI  -lTLI_API -lNewVAD -lMusicDetect
+LDLIBS +=-L${TESTDIR} -lprotobuf -lBAMP -lso_front_end_VAD -lSNI_API
 LDFLAGS += -lpthread -shared
 CFLAGS += -Wall -fPIC -pthread -isystem ../src/protosrc/2.6/ -DLIDFORK
 ifneq (${CONF},Debug)

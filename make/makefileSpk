@@ -9,7 +9,7 @@ BDIR:=$(BDIR)/$(CONF)/
 TDIR:=../test09/ioacas/
 #PROGRAM:=$(TDIR)/$(PROGRAM)
 
-SPKTEST := spktest
+SPKTEST := SpkTest
 TEST_CPPSRCS:= ../src/spkmain/spktest.cpp ../src/utilites.cpp ../src/spk_ex.cpp #../src/MusicDetect_dup.cpp
 TEST_CPPOBJS:=$(addprefix $(BDIR),$(notdir $(patsubst %.cpp,%.o,$(TEST_CPPSRCS))))
 
@@ -32,7 +32,7 @@ else
 CPPFLAGS+=-O2 -Wall
 endif
 
-LDLIBS+=-lpthread  -ldl -L$(TDIR) -lFrontEnd -lSpkAPI -Wl,-rpath-link=$(TDIR)
+LDLIBS+=-lpthread  -ldl -L$(TDIR) -ldllSRVADCluster -lSpeakerRecogAPI -Wl,-rpath-link=$(TDIR)
 
 
 .PHONY: all

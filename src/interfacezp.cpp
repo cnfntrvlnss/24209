@@ -5,6 +5,7 @@
     > Created Time: Tue 06 Sep 2016 03:31:17 AM PDT
  ************************************************************************/
 
+#include "SNI_API.h"
 #include "libBAI_ex.h"
 #include "dllSRVADCluster_lshj.h"
 #include "commonFunc.h"
@@ -68,6 +69,35 @@ string g_strIp;
 //NOTE: only support 3 secs segment.
 static unsigned g_uBampFixedLen = 3 * PCM_ONESEC_LEN;
 
+////////////>>> utilities
+static bool saveWave(vector<DataBlock>& prjData, const char *savedfile)
+{
+    FILE *fp = fopen(savedfile, "ab");
+    if(fp == NULL){
+        LOG_WARN(g_logger, "fail to open file "<< savedfile<< " error: "<< strerror(errno));
+        return false;
+    }
+    bool ret = false;
+    PCM_HEADER pcmheader;
+    initialize_wave_header(&pcmheader, 0);
+    int retw = fwrite(&pcmheader, sizeof(PCM_HEADER), 1, fp);
+    if(retw != 1){
+        LOG_WARN(g_logger, "fail to save data to file, filename: "<< savedfile);
+        fclose(fp);
+        return ret;
+    }
+    unsigned len = 0;
+    for(unsigned idx=0; idx < prjData.size(); idx++){
+        len + prjData[idx].len;
+        fwrite(prjData[idx].getPtr(), 1, prjData[idx].len, fp);
+        
+    }
+    ret = true;
+    fclose(fp);
+    return ret;
+}
+
+///////////<<<
 /**
  * TODO 两个参数的含义还是不够明确，不知道怎么写这个函数.
  */
@@ -210,6 +240,103 @@ static void initGlobal(BufferConfig &myBufCfg)
             );
 }
 
+struct KwMatchSpace{
+    explicit KwMatchSpace(ProjectBuffer *p):
+        prj(p), curStIdx(0), dataLen(0)
+    {
+        prjTime = prj->getPrjTime();
+        bufSize = 16000 * 6;
+        afterVADBuf = (char*)malloc(bufSize + BLOCKSIZE);
+        assert(afterVADBuf != NULL);
+        //pthread_mutex_init(&anoKwLock, NULL);
+    }
+    ~KwMatchSpace(){
+        //pthread_mutex_destroy(&anoKwLock);
+        free(afterVADBuf);
+        returnBuffer(prj);
+    }
+    
+    void saveAudio(unsigned short cfgType, unsigned cfgId, int score);
+    ProjectBuffer *prj;
+    struct timeval prjTime;
+    vector<DataBlock> prjData;
+    unsigned curStIdx;
+    char *afterVADBuf;
+    unsigned bufSize;
+    unsigned dataLen;
+    //pthread_mutex_t anoKwLock;
+};
+
+//TODO reassign Audioroot dir before being deployed.
+static string g_strKwAudioRoot = "debug";
+void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score)
+{
+    char vadedfile[MAX_PATH];
+    gen_spk_save_file(vadedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID, &cfgType, &cfgId, &score);
+    sprintf(strrchr(vadedfile, '.'), "%s", ".raw");
+    FILE *fp = fopen(vadedfile, "wb");
+    assert(fp != NULL);
+    fwrite(afterVADBuf, 1, dataLen, fp);
+    fclose(fp);
+
+    char savedfile[MAX_PATH];
+    gen_spk_save_file(savedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID);
+    saveWave(prjData, savedfile);
+}
+
+struct KwMatchThreadSpace{
+    KwMatchThreadSpace(){
+        idx = 0;
+        nextProjID = 0;
+        pthread_mutex_init(&splock, NULL);
+    }
+    ~KwMatchThreadSpace(){
+        pthread_mutex_destroy(&splock);
+    }
+
+    bool addKwSpace(ProjectBuffer *prj){
+        pthread_mutex_lock(&splock);
+        assert(batchOfProjs.find(prj->ID) == batchOfProjs.end());
+        batchOfProjs[prj->ID] = new KwMatchSpace(prj);
+        pthread_mutex_unlock(&splock);
+        return true;
+    }
+    /**
+     * 返回下一个待处理的节目；若到达了末尾，返回NULL.
+     */
+    KwMatchSpace *getNextKwSpace(){
+        KwMatchSpace *ret = NULL;
+        pthread_mutex_lock(&splock);
+        map<unsigned long, KwMatchSpace*>::iterator it = batchOfProjs.lower_bound(nextProjID);
+        if(it == batchOfProjs.end()){
+            nextProjID = 0;
+        }
+        else{
+            ret = it->second;
+            nextProjID = ret->prj->ID;
+        }
+        pthread_mutex_unlock(&splock);
+        return ret;
+    }
+    void delKwSpace(KwMatchSpace *kwsp){
+        pthread_mutex_lock(&splock);
+        assert(batchOfProjs.erase(kwsp->prj->ID) == 1);
+        delete kwsp;
+        pthread_mutex_unlock(&splock);
+    }
+    unsigned idx;   
+    map<unsigned long, KwMatchSpace*> batchOfProjs;
+    pthread_mutex_t splock;
+    unsigned long nextProjID;
+private:
+    KwMatchThreadSpace(const KwMatchThreadSpace&);
+    KwMatchThreadSpace& operator=(const KwMatchThreadSpace&);
+};
+
+static KwMatchThreadSpace* g_AllProjs4Kw;
+static unsigned g_AllProjs4KwSize;
+
+void sni_init(unsigned thrdnum);
 static void * bampMatchThread(void *);
 static void * KwMatchThread(void *);
 static void *dummyRecThread(void *);
@@ -274,19 +401,23 @@ int InitDLL(int iPriority,
             }
             pthread_attr_destroy(&threadAttr);
         }
+        g_AllProjs4KwSize = 1;
+        g_AllProjs4Kw = new KwMatchThreadSpace[1];
+        sni_init(g_AllProjs4KwSize);
+        for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
         {
             pthread_attr_t threadAttr;
             pthread_attr_init(&threadAttr);
             pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
             pthread_t bmThdId;
-            int retc = pthread_create(&bmThdId, &threadAttr, KwMatchThread, NULL);
+            g_AllProjs4Kw[idx].idx = idx;
+            int retc = pthread_create(&bmThdId, &threadAttr, KwMatchThread, &g_AllProjs4Kw[idx]);
             if(retc != 0){
                 LOG_ERROR(g_logger, "fail to create KwMatchThread thread!");
                 exit(1);
             }
             pthread_attr_destroy(&threadAttr);
         }
-
     }
 
     if(true)
@@ -378,82 +509,64 @@ static void appendDataToReportFile(BampMatchParam &par)
     }
 }
 
-struct KwMatchSpace{
-    explicit KwMatchSpace(ProjectBuffer *p):
-        prj(p), curStIdx(0), dataLen(0)
-    {
-        prjTime = prj->getPrjTime();
-        bufSize = 16000 * 6;
-        afterVADBuf = (char*)malloc(bufSize + BLOCKSIZE);
-        assert(afterVADBuf != NULL);
-        //pthread_mutex_init(&anoKwLock, NULL);
-    }
-    ~KwMatchSpace(){
-        //pthread_mutex_destroy(&anoKwLock);
-        free(afterVADBuf);
-        returnBuffer(prj);
-    }
-    
-    void saveAudio();
-    ProjectBuffer *prj;
-    struct timeval prjTime;
-    vector<DataBlock> prjData;
-    unsigned curStIdx;
-    char *afterVADBuf;
-    unsigned bufSize;
-    unsigned dataLen;
-    //pthread_mutex_t anoKwLock;
-};
-
-static string g_strKwAudioRoot = "debug";
-void KwMatchSpace::saveAudio()
+//////////>>> SNI module.
+void sni_exit()
 {
-    char savedfile[MAX_PATH];
-    char vadedfile[MAX_PATH];
-    gen_spk_save_file(savedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID);
-    strcpy(vadedfile, savedfile);
-    sprintf(strrchr(vadedfile, '.'), "%s", ".raw");
-    FILE *fp = fopen(vadedfile, "wb");
-    assert(fp != NULL);
-    fwrite(afterVADBuf, 1, dataLen, fp);
-    fclose(fp);
+    SNI_Exit();
 }
 
-static map<unsigned long,  KwMatchSpace*> g_AllProjs4Kw;
-static pthread_mutex_t g_AllProjs4KwLocker = PTHREAD_MUTEX_INITIALIZER;
-
-/**
- * 返回下一个待处理的节目；若到达了末尾，返回NULL.
- */
-static KwMatchSpace *getNextKwSpace()
+void sni_init(unsigned thrdnum)
 {
-    static unsigned long nextProjID;
-    KwMatchSpace *ret = NULL;
-    pthread_mutex_lock(&g_AllProjs4KwLocker);
-    map<unsigned long, KwMatchSpace*>::iterator it = g_AllProjs4Kw.lower_bound(nextProjID);
-    if(it == g_AllProjs4Kw.end()){
-        nextProjID = 0;
+    const char * snisysdir = "ioacas/SNISysdir";
+    int err = SNI_Init(const_cast<char*>(snisysdir), static_cast<int>(thrdnum));
+    if(err !=0){
+        LOGFMT_ERROR(g_logger, "failed to call SNI_Init, error: %d.", err);
+        exit(1);
+    }
+    atexit(sni_exit);
+}
+
+bool isAudioSynthetic(SNI_HANDLE hdl, short *pcmdata, unsigned pcmlen, int &maxscore)
+{
+    float scores[3];
+    int err = SNI_Recognize(hdl, pcmdata, pcmlen, -1, -1);
+    if(err != 0){
+        LOGFMT_ERROR(g_logger, "failed to call SNI_Recognize!");
+        return false;
+    }
+    err = SNI_GetResult(hdl, scores, 3);
+    if(err != 0){
+        LOGFMT_ERROR(g_logger, "failed to call SNI_GetResult.");
+    }
+    float score = scores[0];
+    unsigned maxidx = 0;
+    for(unsigned idx=1; idx < 3; idx ++){
+        if(score < scores[idx]){
+            score = scores[idx];
+            maxidx = idx;
+        }
+    }
+    if(maxidx == 1){
+        maxscore = score * 100;
+        return true;
     }
     else{
-        ret = it->second;
-        nextProjID = ret->prj->ID;
+        return false;
     }
-    pthread_mutex_unlock(&g_AllProjs4KwLocker);
-    return ret;
 }
 
-static void delKwSpace(KwMatchSpace* kwsp)
-{
-    pthread_mutex_lock(&g_AllProjs4KwLocker);
-    assert(g_AllProjs4Kw.erase(kwsp->prj->ID) == 1);
-    delete kwsp;
-    pthread_mutex_unlock(&g_AllProjs4KwLocker);
-}
+//////////<<<
 
-void *KwMatchThread(void *)
+void *KwMatchThread(void *param)
 {
+    KwMatchThreadSpace *thrdSp = reinterpret_cast<KwMatchThreadSpace*>(param);
+    SNI_HANDLE hSNI;
+    int sniret = SNI_Open(hSNI);
+    if(sniret != 0){
+        LOGFMT_ERROR(g_logger, "failed to call SNI_Open.");
+    }
     while(true){
-        KwMatchSpace *curSp = getNextKwSpace();
+        KwMatchSpace *curSp = thrdSp->getNextKwSpace();
         if(curSp == NULL){
             sleep(1);
             continue;
@@ -476,7 +589,14 @@ void *KwMatchThread(void *)
                 vadlen += vadstep * 2;
                 if(vadlen > vadbufsize){
                     //TODO pass through systhesized speech recognition.
-                    curSp->saveAudio();
+                    char lineHead[100];
+                    snprintf(lineHead, 100, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                    LOGFMT_DEBUG(g_logger, "%sstart SSRec!", lineHead);
+                    int synScore;
+                    if(isAudioSynthetic(hSNI, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
+                        LOGFMT_INFO(g_logger, "%s CFGID=%u SCORE=%d", lineHead, 1, synScore);
+                        curSp->saveAudio(5, 1, synScore);
+                    }
                     break;
                 }
             }
@@ -485,25 +605,43 @@ void *KwMatchThread(void *)
         }
         
         if(vadlen >= vadbufsize || curSp->prj->getFull()){
-            delKwSpace(curSp);
+            if(vadlen < vadbufsize){
+                //TODO under 6s, be discarded before recognition. 
+                LOGFMT_INFO(g_logger, "PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+            }
+            thrdSp->delKwSpace(curSp);
         }
     }
+    SNI_Close(hSNI);
+}
+
+static inline unsigned hashPid(unsigned long pid)
+{
+    unsigned count = 0;
+    while(pid > 0){
+        pid = pid & (pid - 1);
+        count ++;
+    }
+    return count % g_AllProjs4KwSize;
 }
 
 static map<unsigned long, ProjectBuffer*> g_AllProjs4Bamp;
 static pthread_mutex_t g_AllProjs4BampLocker = PTHREAD_MUTEX_INITIALIZER;
 static int addBampProj(ProjectBuffer *proj)
 {
+    int ret = 0;
     pthread_mutex_lock(&g_AllProjs4BampLocker);
     assert(g_AllProjs4Bamp.find(proj->ID) == g_AllProjs4Bamp.end());
     g_AllProjs4Bamp[proj->ID] = proj;
     pthread_mutex_unlock(&g_AllProjs4BampLocker);
+    ret++;
     
-    pthread_mutex_lock(&g_AllProjs4KwLocker);
-    assert(g_AllProjs4Kw.find(proj->ID) == g_AllProjs4Kw.end());
-    g_AllProjs4Kw[proj->ID] = new KwMatchSpace(proj);
-    pthread_mutex_unlock(&g_AllProjs4KwLocker);
-    return 2;
+    unsigned which = hashPid(proj->ID);
+    if(g_AllProjs4Kw[which].addKwSpace(proj)){
+        ret ++;
+    }
+
+    return ret;
 }
 
 static ProjectBuffer *getNextBampProj()
@@ -795,32 +933,6 @@ void *ioacas_maintain_procedure(void *)
     return NULL;
 }
 
-static bool saveWave(vector<DataBlock>& prjData, const char *savedfile)
-{
-    FILE *fp = fopen(savedfile, "ab");
-    if(fp == NULL){
-        LOG_WARN(g_logger, "fail to open file "<< savedfile<< " error: "<< strerror(errno));
-        return false;
-    }
-    bool ret = false;
-    PCM_HEADER pcmheader;
-    initialize_wave_header(&pcmheader, 0);
-    int retw = fwrite(&pcmheader, sizeof(PCM_HEADER), 1, fp);
-    if(retw != 1){
-        LOG_WARN(g_logger, "fail to save data to file, filename: "<< savedfile);
-        fclose(fp);
-        return ret;
-    }
-    unsigned len = 0;
-    for(unsigned idx=0; idx < prjData.size(); idx++){
-        len + prjData[idx].len;
-        fwrite(prjData[idx].getPtr(), 1, prjData[idx].len, fp);
-        
-    }
-    ret = true;
-    fclose(fp);
-    return ret;
-}
 
 static char g_szAllPrjsDir[MAX_PATH]; //save all projects
 static pthread_mutex_t g_AllProjsDirLock = PTHREAD_MUTEX_INITIALIZER;
