@@ -29,7 +29,7 @@ typedef int SNI_HANDLE;
 *F函数返回值		：0		成功
 *F					：-1	失败
 *****************************************************************************/
-//SNI_DLL_API int Get_version(char* version);
+SNI_DLL_API int Get_version(char* version);
 
 /******************************** 函数说明 ***********************************
 *F

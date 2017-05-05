@@ -5,7 +5,7 @@
     > Created Time: Tue 06 Sep 2016 03:31:17 AM PDT
  ************************************************************************/
 
-#include "SNI_API.h"
+#include "sni_kw_ex.h"
 #include "libBAI_ex.h"
 #include "dllSRVADCluster_lshj.h"
 #include "commonFunc.h"
@@ -336,7 +336,6 @@ private:
 static KwMatchThreadSpace* g_AllProjs4Kw;
 static unsigned g_AllProjs4KwSize;
 
-void sni_init(unsigned thrdnum);
 static void * bampMatchThread(void *);
 static void * KwMatchThread(void *);
 static void *dummyRecThread(void *);
@@ -403,7 +402,6 @@ int InitDLL(int iPriority,
         }
         g_AllProjs4KwSize = 1;
         g_AllProjs4Kw = new KwMatchThreadSpace[1];
-        sni_init(g_AllProjs4KwSize);
         for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
         {
             pthread_attr_t threadAttr;
@@ -510,61 +508,14 @@ static void appendDataToReportFile(BampMatchParam &par)
 }
 
 //////////>>> SNI module.
-void sni_exit()
-{
-    SNI_Exit();
-}
-
-void sni_init(unsigned thrdnum)
-{
-    const char * snisysdir = "ioacas/SNISysdir";
-    int err = SNI_Init(const_cast<char*>(snisysdir), static_cast<int>(thrdnum));
-    if(err !=0){
-        LOGFMT_ERROR(g_logger, "failed to call SNI_Init, error: %d.", err);
-        exit(1);
-    }
-    atexit(sni_exit);
-}
-
-bool isAudioSynthetic(SNI_HANDLE hdl, short *pcmdata, unsigned pcmlen, int &maxscore)
-{
-    float scores[3];
-    int err = SNI_Recognize(hdl, pcmdata, pcmlen, -1, -1);
-    if(err != 0){
-        LOGFMT_ERROR(g_logger, "failed to call SNI_Recognize!");
-        return false;
-    }
-    err = SNI_GetResult(hdl, scores, 3);
-    if(err != 0){
-        LOGFMT_ERROR(g_logger, "failed to call SNI_GetResult.");
-    }
-    float score = scores[0];
-    unsigned maxidx = 0;
-    for(unsigned idx=1; idx < 3; idx ++){
-        if(score < scores[idx]){
-            score = scores[idx];
-            maxidx = idx;
-        }
-    }
-    if(maxidx == 1){
-        maxscore = score * 100;
-        return true;
-    }
-    else{
-        return false;
-    }
-}
 
 //////////<<<
 
 void *KwMatchThread(void *param)
 {
+    int hdl;
+    sni_open(hdl);
     KwMatchThreadSpace *thrdSp = reinterpret_cast<KwMatchThreadSpace*>(param);
-    SNI_HANDLE hSNI;
-    int sniret = SNI_Open(hSNI);
-    if(sniret != 0){
-        LOGFMT_ERROR(g_logger, "failed to call SNI_Open.");
-    }
     while(true){
         KwMatchSpace *curSp = thrdSp->getNextKwSpace();
         if(curSp == NULL){
@@ -593,7 +544,7 @@ void *KwMatchThread(void *param)
                     snprintf(lineHead, 100, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
                     LOGFMT_DEBUG(g_logger, "%sstart SSRec!", lineHead);
                     int synScore;
-                    if(isAudioSynthetic(hSNI, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
+                    if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
                         LOGFMT_INFO(g_logger, "%s CFGID=%u SCORE=%d", lineHead, 1, synScore);
                         curSp->saveAudio(5, 1, synScore);
                     }
@@ -612,7 +563,7 @@ void *KwMatchThread(void *param)
             thrdSp->delKwSpace(curSp);
         }
     }
-    SNI_Close(hSNI);
+    sni_close(hdl);
 }
 
 static inline unsigned hashPid(unsigned long pid)
