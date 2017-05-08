@@ -515,6 +515,8 @@ void *KwMatchThread(void *param)
 {
     int hdl;
     sni_open(hdl);
+    int tbnrsid;
+    tbnr_start(tbnrsid);
     KwMatchThreadSpace *thrdSp = reinterpret_cast<KwMatchThreadSpace*>(param);
     while(true){
         KwMatchSpace *curSp = thrdSp->getNextKwSpace();
@@ -547,6 +549,7 @@ void *KwMatchThread(void *param)
                     if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
                         LOGFMT_INFO(g_logger, "%s CFGID=%u SCORE=%d", lineHead, 1, synScore);
                         curSp->saveAudio(5, 1, synScore);
+                        tbnr_recognize(tbnrsid, reinterpret_cast<short*>(vadbuf), vadlen / 2);
                     }
                     break;
                 }
@@ -563,6 +566,7 @@ void *KwMatchThread(void *param)
             thrdSp->delKwSpace(curSp);
         }
     }
+    tbnr_stop(tbnrsid);
     sni_close(hdl);
 }
 

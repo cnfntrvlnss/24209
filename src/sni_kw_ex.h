@@ -11,6 +11,10 @@
 void sni_init(unsigned thrdnum);
 bool sni_close(int hdl);
 bool sni_open(int &hdl);
-
 bool isAudioSynthetic(int hdl, short *pcmdata, unsigned pcmlen, int &maxscore);
+
+bool tbnr_init(int sessnum);
+bool tbnr_start(int &sid);
+bool tbnr_stop(int sid);
+bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen);
 #endif
