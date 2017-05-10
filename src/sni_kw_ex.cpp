@@ -20,8 +20,8 @@ using namespace std;
 
 # ifndef _COMMONFUNC_H
 enum BLOG_LEVEL{BLOGT, BLOGD, BLOGI, BLOGW, BLOGE};
-#define BLOGLMT BLOGI
-#define BIFO(x) if(BLOGLMT >= BLOG##x) 
+#define BLOGLMT BLOGD
+#define BIFO(x) if(BLOGLMT <= BLOG##x) 
 #define BLOGE(fmt, ...)  BIFO(E) fprintf(stderr, "ERROR "fmt "\n", ##__VA_ARGS__)
 #define BLOGW(fmt, ...) BIFO(W) fprintf(stderr, "WARN "fmt"\n", ##__VA_ARGS__)
 #define BLOGI(fmt, ...) BIFO(I) fprintf(stderr, "INFO "fmt"\n", ##__VA_ARGS__)
@@ -107,7 +107,8 @@ char *str_clone(char *text)
     char *pch = ret;
     do{
         *(pch++) = *(ptr++);
-    }while(*ptr == '\0');
+    }while(*ptr != '\0');
+    *pch = '\0';
     return ret;
 }
 
@@ -134,10 +135,12 @@ WordResult* WordResult_clone(WordResult *res)
         pcand->score = pcand1->score;
         pcand->startTime = pcand1->startTime;
         pcand->endTime = pcand1->endTime;
+        pcand1 = pcand1->next;
     }
     if(word->cands != NULL) pcand->next = NULL;
 
     word->next = WordResult_clone(res->next);
+    return word;
 }
 void WordResult_free(WordResult *res)
 {
@@ -193,6 +196,7 @@ struct SentenceArr{
 
 struct TBNRSessionSpace{
     explicit TBNRSessionSpace(int sessid){
+        this->sessId = sessid;
         state = IDLE;
         resultSize = 0;
         pthread_mutex_init(&lock, NULL);
@@ -206,8 +210,14 @@ struct TBNRSessionSpace{
     void incrOneResult(const Task *res, int len);
     string serialresult();
     void freeResultes();
+    string serialresult_1();
+    void freeResultes_1();
+    void incrOneResult_1(const Task *res, int len);
     int sessId;
-    SentenceArr resultArr[10];
+    //SentenceArr resultArr[10];
+    static const unsigned resultCapacity = 100;
+    WordResultArr resultArr[resultCapacity];
+    
     int resultSize;
     enum EngineState{IDLE, BUSY, DONE};
     EngineState state;
@@ -215,6 +225,7 @@ struct TBNRSessionSpace{
     pthread_cond_t cond;
 };
 
+/*
 string TBNRSessionSpace::serialresult()
 {
     string ret;
@@ -274,10 +285,52 @@ void TBNRSessionSpace::incrOneResult(const Task *res, int len)
 
     resultSize ++;
 }
+*/
+
+string TBNRSessionSpace::serialresult_1()
+{
+    const unsigned maxlen = 1024;
+    char tmpline[maxlen];
+    int curlen = 0;
+    tmpline[0] = '\0';
+    for(int idx=0; idx < resultSize; idx++){
+        for(int jdx=0; jdx < resultArr[idx].len; jdx++){
+            curlen += snprintf(tmpline + curlen, maxlen - curlen, "%s ", WordResult_toStr(resultArr[idx].res[jdx]).c_str());
+        }
+        curlen += snprintf(tmpline + curlen, maxlen - curlen, ";");
+    }
+    return tmpline;
+}
+
+void TBNRSessionSpace::freeResultes_1()
+{
+    for(int idx=0; idx < resultSize; idx++){
+        for(int jdx=0; jdx < resultArr[idx].len; jdx++){
+            WordResult_free(resultArr[idx].res[jdx]);
+        }
+        delete [] resultArr[idx].res;
+    }
+    resultSize = 0;
+}
+
+void TBNRSessionSpace::incrOneResult_1(const Task *res, int len)
+{
+    if(resultSize == resultCapacity){
+        BLOGE("in TBNRSessionSpace::incrOneResult, discard result from tbnr, as the result buffer is full.");
+        return;
+    }
+    resultArr[resultSize].res = new WordResultPtr[len];
+    resultArr[resultSize].len = len;
+    for(int idx=0; idx < len; idx++){
+        resultArr[resultSize].res[idx] = WordResult_clone(reinterpret_cast<WordResult*>(res[idx].newSet));
+    }
+    resultSize ++;
+}
 
 static map<int, TBNRSessionSpace*> g_TBNRSessMap;
 static pthread_mutex_t g_TBNRSessMapLock = PTHREAD_MUTEX_INITIALIZER;
 static string g_TKSysDir = "../../cts_linux_lstm_epd_syllable_1201704114332/model/";
+//static string g_TKSysDir = "../model/";
 static string g_TKCfgFile = "WFSTDecoder_offline_lstm_onlyrec.cfg";
 
 static inline void insertTBNRSess(TBNRSessionSpace *sp)
@@ -312,7 +365,7 @@ void tbnr_exit()
 bool tbnr_init(int sessnum)
 {
     int err = TBNR_Init(g_TKSysDir.c_str(), const_cast<char*>(g_TKCfgFile.c_str()), sessnum);
-    if(err != 0){
+    if(err < 0){
         BLOGE("failed to call TBNR_Init, err: %d", err);
         exit(1);
     }
@@ -322,8 +375,12 @@ bool tbnr_init(int sessnum)
 
 static void putOneBatchKwRes(const Task *pResultArray, int numberOfTasks, int sessionId)
 {
+    //for(int idx=0; idx < 1; idx++){
+    //    ACand * cand = ((WordResult*)pResultArray[idx].newSet)->cands;
+    //    BLOGD("found text in session %d, %s;%s;%s", sessionId, cand->text, cand->phone, cand->segTime);
+    //}
     TBNRSessionSpace * sp = getTBNRSess(sessionId);
-    sp->incrOneResult(pResultArray, numberOfTasks);
+    sp->incrOneResult_1(pResultArray, numberOfTasks);
 }
 
 static void  putTBNRStatus(int eventID, int sessionId)
@@ -332,7 +389,8 @@ static void  putTBNRStatus(int eventID, int sessionId)
         TBNRSessionSpace* sp = getTBNRSess(sessionId);
         pthread_mutex_lock(&sp->lock);
         sp->state = TBNRSessionSpace::DONE;
-        pthread_mutex_lock(&sp->lock);
+        pthread_mutex_unlock(&sp->lock);
+        pthread_cond_signal(&sp->cond);
     }
 }
 
@@ -353,7 +411,7 @@ bool tbnr_start(int &sid)
     }
     if(TBNR_SetResultCallbackFunc(putOneBatchKwRes, sid) != 0){
         BLOGE("failed to call TBNR_SetResultCallbackFunc.");
-        TBNR_Stop(sid);
+        tbnr_stop(sid);
         return false;
     }
     return true;
@@ -372,7 +430,8 @@ bool tbnr_stop(int sid)
 bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen)
 {
     TBNRSessionSpace *sp = getTBNRSess(sid);
-    //TODO be sure result field is empty.
+    //be sure result field is empty.
+    assert(sp->resultSize == 0);
     sp->state = TBNRSessionSpace::BUSY;
     if(TBNR_SendData(reinterpret_cast<char*>(pcmdata), pcmlen *2, sid) < 0){
         BLOGE("failed to call TBNR_SendData.");
@@ -388,9 +447,10 @@ bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen)
     assert(sp->state == TBNRSessionSpace::DONE);
     pthread_mutex_unlock(&sp->lock);
     //TODO fetch resultes.
-    BLOGD("%s", sp->serialresult().c_str());
+    BLOGI("%s", sp->serialresult_1().c_str());
     pthread_mutex_lock(&sp->lock);
     sp->state = TBNRSessionSpace::IDLE;
+    sp->freeResultes_1();
     pthread_mutex_unlock(&sp->lock);
 
     return true;

@@ -8,7 +8,7 @@ BDIR:=$(BDIR)/$(CONF)/
 TDIR:=../testZP/ioacas/
 
 TESTMAIN := SNITest
-TEST_CPPSRCS:= ../src/sni_kw_ex.cpp ../src/sni_kw_test.cpp
+TEST_CPPSRCS:= ../src/sni_kw_ex.cpp ../src/sni_kw_test.cpp #../src/sni_fork.cpp
 TEST_CPPOBJS:=$(addprefix $(BDIR),$(notdir $(patsubst %.cpp,%.o,$(TEST_CPPSRCS))))
 
 CPPSRCS:=${TEST_CPPSRCS}
@@ -25,14 +25,15 @@ else
 CPPFLAGS+=-O2 -Wall
 endif
 
-LDLIBS+=-lpthread -ldl -L../lib -lwav -L$(TDIR) -lSNI_API -Wl,-rpath-link=$(TDIR)
+
+LDLIBS+=-lpthread  -L../lib -lwav -L$(TDIR) -lSNI_API -lVAD -lMusicDetect -lTBNR_API  -Wl,--allow-shlib-undefined -Wl,-rpath-link=$(TDIR) 
 
 
 .PHONY: all
 all: $(TDIR)${TESTMAIN}
 
 ${TDIR}${TESTMAIN}: ${TEST_CPPOBJS}
-	${CCC} -o $@ $^ ${LDLIBS} 
+	${CCC} $^ ${LDLIBS} -o $@ 
 
 
 define CPRE_template

@@ -454,7 +454,7 @@ void interhandler(int num)
 void initIoacas()
 {
     const char *libPath = LIBPATHM(IOACAS);
-    void * hdl = dlopen(libPath, RTLD_NOW );
+    void * hdl = dlopen(libPath, RTLD_LAZY );
     if(hdl == NULL){
         fprintf(stderr, "ERROR fail to load library %s, error: %s.\n", libPath, dlerror());
         exit(1);

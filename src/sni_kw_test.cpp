@@ -42,11 +42,15 @@ static inline void str_rstrip(char *line)
 
 #define MAX_PATH 512
 static string g_ListFile= "audiolist";
-static unsigned g_ThreadNum = 1;
+static unsigned g_ThreadNum = 4;
 void sni_kw_process()
 {
     int hdl;
     if(!sni_open(hdl)){
+        exit(1);
+    }
+    int sid;
+    if(!tbnr_start(sid)){
         exit(1);
     }
     short *wavbuf;
@@ -66,16 +70,19 @@ void sni_kw_process()
         int score;
         if(isAudioSynthetic(hdl, wavbuf, wavlen, score)){
             DEBUG_LOG("synthetic speech found, %s %d", tmpline, score);
+            tbnr_recognize(sid, wavbuf, wavlen);
         }
 
         DestroyWav(wavbuf, wavlen);
     }
     fclose(fp);
     sni_close(hdl);
+    tbnr_stop(sid);
 }
 
 int main(int argc, char *argv[])
 {
+    tbnr_init(g_ThreadNum);
     sni_init(g_ThreadNum);
     sni_kw_process();
     return 0;

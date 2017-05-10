@@ -256,7 +256,7 @@ struct KwMatchSpace{
         returnBuffer(prj);
     }
     
-    void saveAudio(unsigned short cfgType, unsigned cfgId, int score);
+    void saveAudio(unsigned short cfgType, unsigned cfgId, int score, char* output, int leftsize);
     ProjectBuffer *prj;
     struct timeval prjTime;
     vector<DataBlock> prjData;
@@ -267,21 +267,19 @@ struct KwMatchSpace{
     //pthread_mutex_t anoKwLock;
 };
 
-//TODO reassign Audioroot dir before being deployed.
-static string g_strKwAudioRoot = "debug";
-void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score)
+void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score, char* output, int leftsize)
 {
     char vadedfile[MAX_PATH];
-    gen_spk_save_file(vadedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID, &cfgType, &cfgId, &score);
+    gen_spk_save_file(vadedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType, &cfgId, &score);
     sprintf(strrchr(vadedfile, '.'), "%s", ".raw");
     FILE *fp = fopen(vadedfile, "wb");
     assert(fp != NULL);
     fwrite(afterVADBuf, 1, dataLen, fp);
     fclose(fp);
-
     char savedfile[MAX_PATH];
-    gen_spk_save_file(savedfile, g_strKwAudioRoot.c_str(), "1", prjTime.tv_sec, prj->ID);
+    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID);
     saveWave(prjData, savedfile);
+    snprintf(output, leftsize, "VADFile=%s SAVEDFile=%s ", vadedfile, savedfile);
 }
 
 struct KwMatchThreadSpace{
@@ -400,8 +398,10 @@ int InitDLL(int iPriority,
             }
             pthread_attr_destroy(&threadAttr);
         }
-        g_AllProjs4KwSize = 1;
+        g_AllProjs4KwSize = 4;
         g_AllProjs4Kw = new KwMatchThreadSpace[1];
+        sni_init(g_AllProjs4KwSize);
+        tbnr_init(g_AllProjs4KwSize);
         for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
         {
             pthread_attr_t threadAttr;
@@ -542,13 +542,15 @@ void *KwMatchThread(void *param)
                 vadlen += vadstep * 2;
                 if(vadlen > vadbufsize){
                     //TODO pass through systhesized speech recognition.
-                    char lineHead[100];
-                    snprintf(lineHead, 100, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
-                    LOGFMT_DEBUG(g_logger, "%sstart SSRec!", lineHead);
+                    char tmpline[1024];
+                    int linelen = 0;
+                    linelen += snprintf(tmpline + linelen, 1024 - linelen, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                    LOGFMT_DEBUG(g_logger, "%sstart SSRec!", tmpline);
                     int synScore;
                     if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
-                        LOGFMT_INFO(g_logger, "%s CFGID=%u SCORE=%d", lineHead, 1, synScore);
-                        curSp->saveAudio(5, 1, synScore);
+                        linelen += snprintf(tmpline + linelen, 1024 - linelen, "CFGID=%u SCORE=%d ", 1, synScore);
+                        curSp->saveAudio(5, 1, synScore, tmpline + linelen, 1024 - linelen);
+                        LOGFMT_INFO(g_logger, "%sEOP", tmpline);
                         tbnr_recognize(tbnrsid, reinterpret_cast<short*>(vadbuf), vadlen / 2);
                     }
                     break;
