@@ -8,6 +8,7 @@
 #include "sni_kw_ex.h"
 #include "TBNR_API.h"
 #include "SNI_API.h"
+#include "commonFunc.h"
 
 #include <pthread.h>
 
@@ -72,7 +73,7 @@ bool sni_close(int hdl)
 bool isAudioSynthetic(int hdl, short *pcmdata, unsigned pcmlen, int &maxscore)
 {
     float scores[3];
-    int err = SNI_Recognize(hdl, pcmdata, pcmlen, -1, -1);
+    int err = SNI_Recognize(hdl, pcmdata, pcmlen * 2, -1, -1);
     if(err != 0){
         BLOGE("failed to call SNI_Recognize!");
         return false;
@@ -166,17 +167,18 @@ string WordResult_toStr(WordResult *res)
     char tmpline[MaxLineLen];
     unsigned curlen = 0;
     tmpline[curlen] = '\0';
-    while(res != NULL){
-        curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "[");
-        ACand *cand = res->cands;
-        while(cand != NULL){
-            curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "%s|", cand->text);
-            cand = cand->next;
-        }
-        if(*(tmpline + curlen) == '|') curlen --;
-        curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "]");
-        res = res->next;
-    }
+    curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, res->cands->phone);
+    //while(res != NULL){
+    //    curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "[");
+    //    ACand *cand = res->cands;
+    //    while(cand != NULL){
+    //        curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "%s|", cand->text);
+    //        cand = cand->next;
+    //    }
+    //    if(*(tmpline + curlen) == '|') curlen --;
+    //    curlen += snprintf(tmpline + curlen, MaxLineLen - curlen, "]");
+    //    res = res->next;
+    //}
     return tmpline;
 }
 
@@ -185,12 +187,6 @@ struct WordResultArr{
     WordResultArr(): res(NULL), len(0)
     {}
     WordResultPtr *res;
-    int len;
-};
-struct SentenceArr{
-    SentenceArr(): res(NULL), len(0)
-    {}
-    WordResultArr* res;
     int len;
 };
 
@@ -207,14 +203,11 @@ struct TBNRSessionSpace{
         pthread_cond_destroy(&cond);
     }
 
-    void incrOneResult(const Task *res, int len);
     string serialresult();
     void freeResultes();
-    string serialresult_1();
-    void freeResultes_1();
-    void incrOneResult_1(const Task *res, int len);
+    void incrOneResult(const Task *res, int len);
+    void dumpresult(const char* kwfile);
     int sessId;
-    //SentenceArr resultArr[10];
     static const unsigned resultCapacity = 100;
     WordResultArr resultArr[resultCapacity];
     
@@ -225,69 +218,7 @@ struct TBNRSessionSpace{
     pthread_cond_t cond;
 };
 
-/*
 string TBNRSessionSpace::serialresult()
-{
-    string ret;
-    const unsigned maxlen = 1024;
-    ret.resize(maxlen);
-    char *tmpline = const_cast<char*>(ret.c_str());
-    int curlen = 0;
-
-    for(int idx=0; idx < resultSize; idx++){
-        WordResultArr *wordaa = resultArr[idx].res;
-        int wordaalen = resultArr[idx].len;
-        for(int jdx=0; jdx < wordaalen; jdx ++){
-            WordResultPtr *worda = wordaa[jdx].res;
-            int wordalen = wordaa[jdx].len;
-            curlen += snprintf(tmpline + curlen, maxlen - curlen, "{");
-            for(int kdx=0; kdx < wordalen; kdx ++){
-                //serial word_result.
-                curlen += snprintf(tmpline + curlen, maxlen - curlen, "%s", WordResult_toStr(worda[kdx]).c_str());
-            }
-            curlen += snprintf(tmpline + curlen, maxlen - curlen, "}");
-        }
-        curlen += snprintf(tmpline + curlen, maxlen - curlen, ";");
-    }
-    return ret;
-}
-
-void TBNRSessionSpace::freeResultes()
-{
-    for(int idx=0; idx < resultSize; idx++){
-        WordResultArr *wordaa = resultArr[idx].res;
-        int wordaalen = resultArr[idx].len;
-        for(int jdx=0; jdx < wordaalen; jdx ++){
-            WordResultPtr *worda = wordaa[jdx].res;
-            int wordalen = wordaa[jdx].len;
-            for(int kdx=0; kdx < wordalen; kdx ++){
-                WordResult_free(worda[kdx]);
-            }
-            delete [] worda;
-        }
-        delete [] wordaa;
-    }
-}
-
-void TBNRSessionSpace::incrOneResult(const Task *res, int len)
-{
-    resultArr[resultSize].res = new WordResultArr[len];
-    resultArr[resultSize].len = len;
-
-    for(int idx=0; idx < len; idx++){
-        WordResultArr &wordarr = resultArr[resultSize].res[idx];
-        wordarr.len = res[idx].frameNum;
-        wordarr.res = new WordResultPtr[wordarr.len];
-        for(int jdx=0; jdx < len; jdx ++){
-            wordarr.res[jdx] = WordResult_clone(reinterpret_cast<WordResult**>(res[idx].newSet)[jdx]);
-        }
-    }
-
-    resultSize ++;
-}
-*/
-
-string TBNRSessionSpace::serialresult_1()
 {
     const unsigned maxlen = 1024;
     char tmpline[maxlen];
@@ -302,7 +233,22 @@ string TBNRSessionSpace::serialresult_1()
     return tmpline;
 }
 
-void TBNRSessionSpace::freeResultes_1()
+void TBNRSessionSpace::dumpresult(const char* kwfile)
+{
+    if(kwfile == NULL || kwfile[0] == '\0'){
+        return;
+    }
+    FILE *fp = fopen(kwfile, "w");
+    if(fp == NULL){
+        BLOGE("failed to create kwoutfile %s", kwfile);
+        return;
+    }
+    string res = serialresult();
+    fwrite(res.c_str(), 1, res.size(), fp);
+    fclose(fp);
+}
+
+void TBNRSessionSpace::freeResultes()
 {
     for(int idx=0; idx < resultSize; idx++){
         for(int jdx=0; jdx < resultArr[idx].len; jdx++){
@@ -313,7 +259,7 @@ void TBNRSessionSpace::freeResultes_1()
     resultSize = 0;
 }
 
-void TBNRSessionSpace::incrOneResult_1(const Task *res, int len)
+void TBNRSessionSpace::incrOneResult(const Task *res, int len)
 {
     if(resultSize == resultCapacity){
         BLOGE("in TBNRSessionSpace::incrOneResult, discard result from tbnr, as the result buffer is full.");
@@ -358,18 +304,22 @@ static inline void delTBNRSess(int sessid)
 
 void tbnr_exit()
 {
+    BLOGD("start tbnr_exit.");
     if(TBNR_Exit() != 0){
         BLOGE("failed to call TBNR_Exit.");
     }
 }
+
 bool tbnr_init(int sessnum)
 {
+    BLOGD("start tbnr_init.");
     int err = TBNR_Init(g_TKSysDir.c_str(), const_cast<char*>(g_TKCfgFile.c_str()), sessnum);
     if(err < 0){
         BLOGE("failed to call TBNR_Init, err: %d", err);
         exit(1);
     }
     atexit(tbnr_exit);
+    BLOGI("successful to init tbnr, sessnum: %d", sessnum);
     return true;
 }
 
@@ -380,7 +330,7 @@ static void putOneBatchKwRes(const Task *pResultArray, int numberOfTasks, int se
     //    BLOGD("found text in session %d, %s;%s;%s", sessionId, cand->text, cand->phone, cand->segTime);
     //}
     TBNRSessionSpace * sp = getTBNRSess(sessionId);
-    sp->incrOneResult_1(pResultArray, numberOfTasks);
+    sp->incrOneResult(pResultArray, numberOfTasks);
 }
 
 static void  putTBNRStatus(int eventID, int sessionId)
@@ -414,6 +364,7 @@ bool tbnr_start(int &sid)
         tbnr_stop(sid);
         return false;
     }
+    BLOGI("one session from tbnr_start, id: %d.", sid);
     return true;
 }
 
@@ -427,7 +378,7 @@ bool tbnr_stop(int sid)
     return true;
 }
 
-bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen)
+bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen, const char *kwoutfile)
 {
     TBNRSessionSpace *sp = getTBNRSess(sid);
     //be sure result field is empty.
@@ -447,10 +398,11 @@ bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen)
     assert(sp->state == TBNRSessionSpace::DONE);
     pthread_mutex_unlock(&sp->lock);
     //TODO fetch resultes.
-    BLOGI("%s", sp->serialresult_1().c_str());
+    sp->dumpresult(kwoutfile);
+    BLOGT("sessionId %d: %s", sid, sp->serialresult().c_str());
     pthread_mutex_lock(&sp->lock);
     sp->state = TBNRSessionSpace::IDLE;
-    sp->freeResultes_1();
+    sp->freeResultes();
     pthread_mutex_unlock(&sp->lock);
 
     return true;

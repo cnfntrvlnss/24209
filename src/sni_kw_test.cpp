@@ -17,7 +17,7 @@
 using namespace std;
 
 static bool g_bDebugMode = true;
-#define DEBUG_LOG(FMT, ...) if(g_bDebugMode) fprintf(stderr, FMT "\n", ##__VA_ARGS__);
+#define DEBUG_LOG(FMT, ...) if(g_bDebugMode) fprintf(stdout, FMT "\n", ##__VA_ARGS__);
 #define ERROR_LOG(FMT, ...) fprintf(stderr, "ERROR " FMT "\n", ##__VA_ARGS__);
 static bool loadAudio(const char *curfile, short *&wavbuf, int &wavlen)
 {

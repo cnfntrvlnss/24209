@@ -25,9 +25,8 @@ else
 CPPFLAGS+=-O2 -Wall
 endif
 
-
+#-lso_front_end_VAD -lsvml -lirng -limf -lintlc
 LDLIBS+=-lpthread  -L../lib -lwav -L$(TDIR) -lSNI_API -lVAD -lMusicDetect -lTBNR_API  -Wl,--allow-shlib-undefined -Wl,-rpath-link=$(TDIR) 
-
 
 .PHONY: all
 all: $(TDIR)${TESTMAIN}

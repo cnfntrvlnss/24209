@@ -16,5 +16,5 @@ bool isAudioSynthetic(int hdl, short *pcmdata, unsigned pcmlen, int &maxscore);
 bool tbnr_init(int sessnum);
 bool tbnr_start(int &sid);
 bool tbnr_stop(int sid);
-bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen);
+bool tbnr_recognize(int sid, short *pcmdata, unsigned pcmlen, const char* outfile);
 #endif

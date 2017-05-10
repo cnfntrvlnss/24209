@@ -264,6 +264,7 @@ struct KwMatchSpace{
     char *afterVADBuf;
     unsigned bufSize;
     unsigned dataLen;
+    string kwoutfile;
     //pthread_mutex_t anoKwLock;
 };
 
@@ -271,15 +272,26 @@ void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score, 
 {
     char vadedfile[MAX_PATH];
     gen_spk_save_file(vadedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType, &cfgId, &score);
-    sprintf(strrchr(vadedfile, '.'), "%s", ".raw");
+    char *lastdotptr = strrchr(vadedfile, '.');
+    sprintf(lastdotptr, "%s", ".raw");
     FILE *fp = fopen(vadedfile, "wb");
-    assert(fp != NULL);
-    fwrite(afterVADBuf, 1, dataLen, fp);
-    fclose(fp);
+    if(fp != NULL){
+        fwrite(afterVADBuf, 1, dataLen, fp);
+        fclose(fp);
+        kwoutfile = string(vadedfile, lastdotptr);
+        kwoutfile +=  ".txt";
+        int plen = snprintf(output, leftsize, "VADFile=%s ", vadedfile);
+        output += plen;
+        leftsize -= plen;
+    }
+    else{
+        LOG_ERROR(g_logger, "failed to create vadedfile "<< vadedfile);
+    }
     char savedfile[MAX_PATH];
-    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID);
-    saveWave(prjData, savedfile);
-    snprintf(output, leftsize, "VADFile=%s SAVEDFile=%s ", vadedfile, savedfile);
+    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType);
+    if(saveWave(prjData, savedfile)){
+        snprintf(output, leftsize, "SAVEDFile=%s ", savedfile);
+    }
 }
 
 struct KwMatchThreadSpace{
@@ -319,8 +331,8 @@ struct KwMatchThreadSpace{
     void delKwSpace(KwMatchSpace *kwsp){
         pthread_mutex_lock(&splock);
         assert(batchOfProjs.erase(kwsp->prj->ID) == 1);
-        delete kwsp;
         pthread_mutex_unlock(&splock);
+        delete kwsp;
     }
     unsigned idx;   
     map<unsigned long, KwMatchSpace*> batchOfProjs;
@@ -332,7 +344,7 @@ private:
 };
 
 static KwMatchThreadSpace* g_AllProjs4Kw;
-static unsigned g_AllProjs4KwSize;
+static unsigned g_AllProjs4KwSize = 4;
 
 static void * bampMatchThread(void *);
 static void * KwMatchThread(void *);
@@ -363,11 +375,6 @@ int InitDLL(int iPriority,
     initGlobal(buffconfig);
 
     init_bufferglobal(buffconfig, addBampProj);
-    /*
-    if(!ioareg_init()){
-        return 1;
-    }
-    */
     {
         pthread_attr_t threadAttr;
         pthread_attr_init(&threadAttr);
@@ -381,6 +388,29 @@ int InitDLL(int iPriority,
         pthread_attr_destroy(&threadAttr);
     }
 
+    if(!InitVADCluster_File()){
+        LOG_ERROR(g_logger, "failed to initVADCluster_File.");
+    }
+
+    if(g_AllProjs4KwSize > 0){
+        g_AllProjs4Kw = new KwMatchThreadSpace[g_AllProjs4KwSize];
+        sni_init(g_AllProjs4KwSize);
+        tbnr_init(g_AllProjs4KwSize);
+        for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
+        {
+            pthread_attr_t threadAttr;
+            pthread_attr_init(&threadAttr);
+            pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
+            pthread_t bmThdId;
+            g_AllProjs4Kw[idx].idx = idx;
+            int retc = pthread_create(&bmThdId, &threadAttr, KwMatchThread, &g_AllProjs4Kw[idx]);
+            if(retc != 0){
+                LOG_ERROR(g_logger, "fail to create KwMatchThread thread!");
+                exit(1);
+            }
+            pthread_attr_destroy(&threadAttr);
+        }
+    }
     if(g_bUseBamp){
         if(!bamp_init(reportBampResultSeg, g_uBampVadNum, g_fAfterBampVadSecs)){
             LOG_INFO(g_logger, "fail to initailize bamp engine.");
@@ -394,24 +424,6 @@ int InitDLL(int iPriority,
             int retc = pthread_create(&bmThdId, &threadAttr, bampMatchThread, NULL);
             if(retc != 0){
                 LOG_ERROR(g_logger, "fail to create BampMatch thread!");
-                exit(1);
-            }
-            pthread_attr_destroy(&threadAttr);
-        }
-        g_AllProjs4KwSize = 4;
-        g_AllProjs4Kw = new KwMatchThreadSpace[1];
-        sni_init(g_AllProjs4KwSize);
-        tbnr_init(g_AllProjs4KwSize);
-        for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
-        {
-            pthread_attr_t threadAttr;
-            pthread_attr_init(&threadAttr);
-            pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
-            pthread_t bmThdId;
-            g_AllProjs4Kw[idx].idx = idx;
-            int retc = pthread_create(&bmThdId, &threadAttr, KwMatchThread, &g_AllProjs4Kw[idx]);
-            if(retc != 0){
-                LOG_ERROR(g_logger, "fail to create KwMatchThread thread!");
                 exit(1);
             }
             pthread_attr_destroy(&threadAttr);
@@ -507,9 +519,13 @@ static void appendDataToReportFile(BampMatchParam &par)
     }
 }
 
-//////////>>> SNI module.
-
-//////////<<<
+static bool VADBuffer_fork(const bool bAllOut, const short* psPCMBuffer, const int iSampleNum, short* psPCMBufferVAD, int& riSampleNumVAD, bool bUseDetector=true)
+{
+    LOGFMT_INFO(g_logger, "in vadbuffer_fork!!!");
+    memcpy(psPCMBufferVAD, psPCMBuffer, iSampleNum * 2);
+    riSampleNumVAD = iSampleNum;
+    return true;
+}
 
 void *KwMatchThread(void *param)
 {
@@ -540,30 +556,33 @@ void *KwMatchThread(void *param)
             if(VADBuffer(true, inSmp, inlen, bufSt, vadstep)){
                 assert(vadstep >= 0);
                 vadlen += vadstep * 2;
-                if(vadlen > vadbufsize){
-                    //TODO pass through systhesized speech recognition.
-                    char tmpline[1024];
-                    int linelen = 0;
-                    linelen += snprintf(tmpline + linelen, 1024 - linelen, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
-                    LOGFMT_DEBUG(g_logger, "%sstart SSRec!", tmpline);
-                    int synScore;
-                    if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
-                        linelen += snprintf(tmpline + linelen, 1024 - linelen, "CFGID=%u SCORE=%d ", 1, synScore);
-                        curSp->saveAudio(5, 1, synScore, tmpline + linelen, 1024 - linelen);
-                        LOGFMT_INFO(g_logger, "%sEOP", tmpline);
-                        tbnr_recognize(tbnrsid, reinterpret_cast<short*>(vadbuf), vadlen / 2);
-                    }
+                if(vadlen >= vadbufsize){
                     break;
                 }
             }
-            
             curidx++;
         }
         
         if(vadlen >= vadbufsize || curSp->prj->getFull()){
             if(vadlen < vadbufsize){
                 //TODO under 6s, be discarded before recognition. 
-                LOGFMT_INFO(g_logger, "PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                LOGFMT_INFO(g_logger, "SNIREG PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+            }
+            else{
+                //pass through systhesized speech recognition.
+                char tmpline[1024];
+                int linelen = 0;
+                linelen += snprintf(tmpline + linelen, 1024 - linelen, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                LOGFMT_DEBUG(g_logger, "%sstart SSRec!", tmpline);
+                int synScore;
+                if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
+                    linelen += snprintf(tmpline + linelen, 1024 - linelen, "CFGID=%u SCORE=%d ", 1, synScore);
+                    curSp->saveAudio(5, 1, synScore, tmpline + linelen, 1024 - linelen);
+                    tbnr_recognize(tbnrsid, reinterpret_cast<short*>(vadbuf), vadlen / 2, curSp->kwoutfile.c_str());
+                    LOGFMT_INFO(g_logger, "%sEOP", tmpline);
+                }
+                else{
+                }
             }
             thrdSp->delKwSpace(curSp);
         }
@@ -587,16 +606,21 @@ static pthread_mutex_t g_AllProjs4BampLocker = PTHREAD_MUTEX_INITIALIZER;
 static int addBampProj(ProjectBuffer *proj)
 {
     int ret = 0;
-    pthread_mutex_lock(&g_AllProjs4BampLocker);
-    assert(g_AllProjs4Bamp.find(proj->ID) == g_AllProjs4Bamp.end());
-    g_AllProjs4Bamp[proj->ID] = proj;
-    pthread_mutex_unlock(&g_AllProjs4BampLocker);
-    ret++;
-    
-    unsigned which = hashPid(proj->ID);
-    if(g_AllProjs4Kw[which].addKwSpace(proj)){
-        ret ++;
+
+    if(g_bUseBamp){
+        pthread_mutex_lock(&g_AllProjs4BampLocker);
+        assert(g_AllProjs4Bamp.find(proj->ID) == g_AllProjs4Bamp.end());
+        g_AllProjs4Bamp[proj->ID] = proj;
+        pthread_mutex_unlock(&g_AllProjs4BampLocker);
+        ret++;
     }
+
+    if(g_AllProjs4KwSize > 0){
+        unsigned which = hashPid(proj->ID);
+        if(g_AllProjs4Kw[which].addKwSpace(proj)){
+            ret ++;
+        }
+    } 
 
     return ret;
 }
@@ -694,6 +718,7 @@ int CloseDLL()
             return 1;
         }
     }
+    FreeVADCluster();
     //ioareg_rlse();
     rlse_bufferglobal();
     return 0;

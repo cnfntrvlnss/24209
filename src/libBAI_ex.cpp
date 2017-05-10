@@ -222,6 +222,15 @@ void * preBampEngVADThread(void *param)
     free(tmpBuf);
 }
 
+static unsigned int SDBMHash(const char *str)
+{
+    unsigned int hash = 0;
+    while(*str){
+	hash = *str + (hash<< 6) + (hash<< 16) - hash;
+	str++;
+    }
+    return hash & 0x7FFFFFFF;
+}
 void filterByVAD(vector<InputVADParam>& input){
     if(g_uPreBampEngVADTasksLen == 0){
         BLOGD("in filterByVAD, without configuration of Pre-bamp VAD, skip one round.");   
@@ -346,7 +355,11 @@ bool BampMatchObject::bamp_match_vad(std::vector<BampMatchParam>& allData)
                 continue;
             }
             oss<< " CfgName="<< curhit.acAudioUrl;
-            sscanf(curhit.acAudioUrl, "%u", &desres.m_iTargetID);
+            if(sscanf(curhit.acAudioUrl, "%u", &desres.m_iTargetID) <= 0){
+	    desres.m_iAlarmType = 0;
+	    desres.m_iTargetID = SDBMHash(curhit.acAudioUrl);
+	    }
+	    else{
             if(desres.m_iTargetID % 2){
                 desres.m_iAlarmType = g_uBampJCServType;
             }
@@ -354,6 +367,8 @@ bool BampMatchObject::bamp_match_vad(std::vector<BampMatchParam>& allData)
                 desres.m_iAlarmType = g_uBampFDServType;
             }
             desres.m_iTargetID /= 2;
+	    
+	    }
             desres.m_iHarmLevel = 0;
             desres.m_fTargetMatchLen = curhit.fDurationS;
             desres.m_fLikely = curhit.fMatchedRate;
@@ -670,7 +685,7 @@ bool bamp_init(SummitBampResult callbck, unsigned vadParallelNum, float afterVad
 {
     AutoLock mylock(g_BampLock);
     BLOGI("in bamp_init, starting init BAI.");
-    BAI_Code err = BAI_Init(g_szBampCfgFile, g_uBampThreadNum);
+    BAI_Code err = BAI_Init(g_szBampCfgFile, "ioacas/license_BAI.txt", g_uBampThreadNum);
     if(err != BAI_OK){
       BLOGE("failed to initialize  bamp engine. err: %d.", err);   
         return false;
@@ -686,22 +701,16 @@ bool bamp_init(SummitBampResult callbck, unsigned vadParallelNum, float afterVad
     int retcrt;
     g_uPreBampEngVADTasksLen = vadParallelNum;
     if(g_uPreBampEngVADTasksLen > 0){
-        if(!InitVADCluster_File()){
-            BLOGE("in bamp_init, faile to initVADCluster_File.");
-            g_uPreBampEngVADTasksLen = 0;
-        }
-        else{
-            g_fAfterVadSecs = afterVadRatio;
-            g_pPreBampEngVADTasks = new PreBampEngVADTask[g_uPreBampEngVADTasksLen];
-            g_PreBampVADThreadIDs = new pthread_t[g_uPreBampEngVADTasksLen];
-            for(size_t idx=0; idx < g_uPreBampEngVADTasksLen; idx++){
-                retcrt = pthread_create(&(g_PreBampVADThreadIDs[idx]), NULL, preBampEngVADThread, &(g_pPreBampEngVADTasks[idx]));
-                if(retcrt != 0){
-                    BLOGE("fail to create UpdateLibraryThread. err: %d", retcrt);
-                    exit(1);
-                }
-                BLOGI("in bamp_init, preBampEngVADThread %u has been created.", idx);
+        g_fAfterVadSecs = afterVadRatio;
+        g_pPreBampEngVADTasks = new PreBampEngVADTask[g_uPreBampEngVADTasksLen];
+        g_PreBampVADThreadIDs = new pthread_t[g_uPreBampEngVADTasksLen];
+        for(size_t idx=0; idx < g_uPreBampEngVADTasksLen; idx++){
+            retcrt = pthread_create(&(g_PreBampVADThreadIDs[idx]), NULL, preBampEngVADThread, &(g_pPreBampEngVADTasks[idx]));
+            if(retcrt != 0){
+                BLOGE("fail to create UpdateLibraryThread. err: %d", retcrt);
+                exit(1);
             }
+            BLOGI("in bamp_init, preBampEngVADThread %u has been created.", idx);
         }
     }
     
@@ -726,7 +735,6 @@ bool bamp_rlse()
         }
         delete [] g_pPreBampEngVADTasks;
         delete [] g_PreBampVADThreadIDs;
-        FreeVADCluster();
         BLOGI("in bamp_rlse, shutdown PreBampVAD module.");
     }
 
