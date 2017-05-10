@@ -72,7 +72,7 @@ extern "C"
 	};
 
 	// Step1. initialize audio identifier engine. 
-	LIBBAI_API BAI_Code BAI_Init(const char* kpcConfigFile, const int kiThreadNum);
+	LIBBAI_API BAI_Code BAI_Init(const char* kpcConfigFile, const char* kpcLicensePath, const int kiThreadNum);
 
 	// Step2. extract audio DNA from the input PCM data, kiDNAType(0 for index, 1 for retrieval) 
 	LIBBAI_API BAI_Code BAI_ExtractDNA(BAI_InputItem* pstInputItems, const int kiInputNum, const int kiDNAType);

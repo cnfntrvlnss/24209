@@ -25,7 +25,8 @@ else
 CPPFLAGS+=-O2 -Wall
 endif
 
-LDLIBS+=-lpthread -ldl -L../lib -lwav -L$(TDIR) -lso_front_end_VAD -lsvml -lirng -limf -lintlc -lSNI_API -lVAD -lMusicDetect -Wl,-rpath-link=$(TDIR)
+#-lso_front_end_VAD -lsvml -lirng -limf -lintlc
+LDLIBS+=-lpthread -ldl -L../lib -lwav -L$(TDIR)  -lSNI_API -lVAD -lMusicDetect -Wl,-rpath-link=$(TDIR)
 
 
 .PHONY: all

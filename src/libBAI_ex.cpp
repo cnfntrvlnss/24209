@@ -222,6 +222,15 @@ void * preBampEngVADThread(void *param)
     free(tmpBuf);
 }
 
+static unsigned int SDBMHash(const char *str)
+{
+    unsigned int hash = 0;
+    while(*str){
+	hash = *str + (hash<< 6) + (hash<< 16) - hash;
+	str++;
+    }
+    return hash & 0x7FFFFFFF;
+}
 void filterByVAD(vector<InputVADParam>& input){
     if(g_uPreBampEngVADTasksLen == 0){
         BLOGD("in filterByVAD, without configuration of Pre-bamp VAD, skip one round.");   
@@ -346,7 +355,11 @@ bool BampMatchObject::bamp_match_vad(std::vector<BampMatchParam>& allData)
                 continue;
             }
             oss<< " CfgName="<< curhit.acAudioUrl;
-            sscanf(curhit.acAudioUrl, "%u", &desres.m_iTargetID);
+            if(sscanf(curhit.acAudioUrl, "%u", &desres.m_iTargetID) <= 0){
+	    desres.m_iAlarmType = 0;
+	    desres.m_iTargetID = SDBMHash(curhit.acAudioUrl);
+	    }
+	    else{
             if(desres.m_iTargetID % 2){
                 desres.m_iAlarmType = g_uBampJCServType;
             }
@@ -354,6 +367,8 @@ bool BampMatchObject::bamp_match_vad(std::vector<BampMatchParam>& allData)
                 desres.m_iAlarmType = g_uBampFDServType;
             }
             desres.m_iTargetID /= 2;
+	    
+	    }
             desres.m_iHarmLevel = 0;
             desres.m_fTargetMatchLen = curhit.fDurationS;
             desres.m_fLikely = curhit.fMatchedRate;
@@ -670,7 +685,7 @@ bool bamp_init(SummitBampResult callbck, unsigned vadParallelNum, float afterVad
 {
     AutoLock mylock(g_BampLock);
     BLOGI("in bamp_init, starting init BAI.");
-    BAI_Code err = BAI_Init(g_szBampCfgFile, g_uBampThreadNum);
+    BAI_Code err = BAI_Init(g_szBampCfgFile, "ioacas/license_BAI.txt", g_uBampThreadNum);
     if(err != BAI_OK){
       BLOGE("failed to initialize  bamp engine. err: %d.", err);   
         return false;

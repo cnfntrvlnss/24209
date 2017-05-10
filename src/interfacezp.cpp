@@ -277,7 +277,7 @@ void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score, 
     fwrite(afterVADBuf, 1, dataLen, fp);
     fclose(fp);
     char savedfile[MAX_PATH];
-    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID);
+    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType);
     saveWave(prjData, savedfile);
     snprintf(output, leftsize, "VADFile=%s SAVEDFile=%s ", vadedfile, savedfile);
 }
@@ -319,8 +319,8 @@ struct KwMatchThreadSpace{
     void delKwSpace(KwMatchSpace *kwsp){
         pthread_mutex_lock(&splock);
         assert(batchOfProjs.erase(kwsp->prj->ID) == 1);
-        delete kwsp;
         pthread_mutex_unlock(&splock);
+        delete kwsp;
     }
     unsigned idx;   
     map<unsigned long, KwMatchSpace*> batchOfProjs;
@@ -332,7 +332,7 @@ private:
 };
 
 static KwMatchThreadSpace* g_AllProjs4Kw;
-static unsigned g_AllProjs4KwSize;
+static unsigned g_AllProjs4KwSize = 4;
 
 static void * bampMatchThread(void *);
 static void * KwMatchThread(void *);
@@ -398,8 +398,8 @@ int InitDLL(int iPriority,
             }
             pthread_attr_destroy(&threadAttr);
         }
-        g_AllProjs4KwSize = 1;
-        g_AllProjs4Kw = new KwMatchThreadSpace[1];
+	if(g_AllProjs4KwSize > 0){
+        g_AllProjs4Kw = new KwMatchThreadSpace[g_AllProjs4KwSize];
         sni_init(g_AllProjs4KwSize);
         for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
         {
@@ -415,6 +415,7 @@ int InitDLL(int iPriority,
             }
             pthread_attr_destroy(&threadAttr);
         }
+	}
     }
 
     if(true)
@@ -506,9 +507,13 @@ static void appendDataToReportFile(BampMatchParam &par)
     }
 }
 
-//////////>>> SNI module.
-
-//////////<<<
+static bool VADBuffer_fork(const bool bAllOut, const short* psPCMBuffer, const int iSampleNum, short* psPCMBufferVAD, int& riSampleNumVAD, bool bUseDetector=true)
+{
+    LOGFMT_INFO(g_logger, "in vadbuffer_fork!!!");
+    memcpy(psPCMBufferVAD, psPCMBuffer, iSampleNum * 2);
+    riSampleNumVAD = iSampleNum;
+    return true;
+}
 
 void *KwMatchThread(void *param)
 {
@@ -534,10 +539,10 @@ void *KwMatchThread(void *param)
             short *bufSt = reinterpret_cast<short*>(vadbuf + vadlen);
             unsigned leftsize = (vadbufsize - vadlen) / 2;
             int vadstep = leftsize;
-            if(VADBuffer(true, inSmp, inlen, bufSt, vadstep)){
+            if(VADBuffer_fork(true, inSmp, inlen, bufSt, vadstep)){
                 assert(vadstep >= 0);
                 vadlen += vadstep * 2;
-                if(vadlen > vadbufsize){
+                if(vadlen >= vadbufsize){
                     //TODO pass through systhesized speech recognition.
                     char tmpline[1024];
                     int linelen = 0;
@@ -559,7 +564,7 @@ void *KwMatchThread(void *param)
         if(vadlen >= vadbufsize || curSp->prj->getFull()){
             if(vadlen < vadbufsize){
                 //TODO under 6s, be discarded before recognition. 
-                LOGFMT_INFO(g_logger, "PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                LOGFMT_INFO(g_logger, "SNIREG PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
             }
             thrdSp->delKwSpace(curSp);
         }
@@ -588,10 +593,12 @@ static int addBampProj(ProjectBuffer *proj)
     pthread_mutex_unlock(&g_AllProjs4BampLocker);
     ret++;
     
+    if(g_AllProjs4KwSize > 0){
     unsigned which = hashPid(proj->ID);
     if(g_AllProjs4Kw[which].addKwSpace(proj)){
         ret ++;
     }
+    } 
 
     return ret;
 }

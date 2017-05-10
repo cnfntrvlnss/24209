@@ -66,7 +66,7 @@ bool sni_close(int hdl)
 bool isAudioSynthetic(int hdl, short *pcmdata, unsigned pcmlen, int &maxscore)
 {
     float scores[3];
-    int err = SNI_Recognize(hdl, pcmdata, pcmlen, -1, -1);
+    int err = SNI_Recognize(hdl, pcmdata, pcmlen * 2, -1, -1);
     if(err != 0){
         BLOGE("failed to call SNI_Recognize!");
         return false;
