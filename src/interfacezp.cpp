@@ -949,3 +949,13 @@ void *dummyRecThread(void *)
 
     return NULL;
 }
+
+
+
+extern "C"
+{
+void _ZSt24__throw_out_of_range_fmtPKcz()
+{
+    
+}
+}
