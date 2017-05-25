@@ -14,7 +14,7 @@ TESTDIR=../test09/ioacas/
 VPATH=../src/:../src/wav/
 
 CPPNAMES:=interface242.cpp ioareg.cpp commonFunc.cpp log4z.cpp ProjectBuffer.cpp  utilites.cpp  socket_ex.cpp
-CPPNAMES += dllVAD_dup.cpp MusicDetect_dup.cpp TLI_API_dup.cpp
+CPPNAMES += dllVAD_dup.cpp TLI_API_dup.cpp
 CPPNAMES += spk_ex.cpp #spk_fork.cpp
 CPPNAMES+= waveinfo.cpp Voc2Wav.cpp WaveFunc.cpp
 CNAMES:=

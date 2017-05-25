@@ -67,7 +67,7 @@ void clockoutput_start(const char *fmt, ...);
 std::string clockoutput_end();
 #else
 static void clockoutput_start(const char *fmt, ...){}
-static std::string clockoutput_end(){return ""}
+static std::string clockoutput_end(){return "";}
 #endif 
 
 bool if_directory_exists(const char *dir, bool bForce = false);

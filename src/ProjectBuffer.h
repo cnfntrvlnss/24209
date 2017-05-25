@@ -105,26 +105,7 @@ public:
         if(endIdx < idx) return;
         getDataSegmentIn(idx, offset, endIdx, endOffset, data);
     }
-    /*
-    void getDataSegment(unsigned idx, unsigned offset, unsigned endIdx, unsigned endOffset, std::vector<DataBlock>& data)
-    {
-        AutoLock lock(m_BufferLock);
-        getDataSegmentIn(idx, offset, endIdx, endOffset, data);
-    }
-    */
 
-private:
-    ProjectBuffer(const ProjectBuffer& );
-    ProjectBuffer& operator=(const ProjectBuffer&);
-    void turnFull()
-    {
-        assert(!bFull);
-        bFull = true;
-        fullRecord = lastRecord;
-    }
-
-    void getDataSegmentIn(unsigned idx0, unsigned offset0, unsigned idx1, unsigned offset1, std::vector<DataBlock>& data);
-public:
     struct BufferConfig{
         BufferConfig():
             waitSecondsStep(30), waitSeconds(UINT_MAX), waitLength(UINT_MAX)
@@ -137,6 +118,16 @@ public:
     static bool initGlobal(BufferConfig bufferConfig = BufferConfig());
     unsigned long ID;
 private:
+    ProjectBuffer(const ProjectBuffer& );
+    ProjectBuffer& operator=(const ProjectBuffer&);
+    void turnFull()
+    {
+        assert(!bFull);
+        bFull = true;
+        fullRecord = lastRecord;
+    }
+    void getDataSegmentIn(unsigned idx0, unsigned offset0, unsigned idx1, unsigned offset1, std::vector<DataBlock>& data);
+
     struct ArrivalRecord{
         ArrivalRecord():
             seconds(0), unitIdx(0), offset(0)
@@ -152,7 +143,6 @@ private:
     friend std::ostream& operator<<(std::ostream&, ArrivalRecord);
     LockHelper m_BufferLock;
     std::vector<DataBlock> arrUnits;
-    //std::vector<ArrivalRecord> arrArrivalRecords;
     ArrivalRecord fullRecord;
     ArrivalRecord lastRecord;
     time_t prjTime;

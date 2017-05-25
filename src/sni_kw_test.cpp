@@ -50,7 +50,7 @@ void sni_kw_process()
         exit(1);
     }
     int sid;
-    if(!tbnr_start(sid)){
+    if(!tkw_open(sid)){
         exit(1);
     }
     short *wavbuf;
@@ -70,19 +70,20 @@ void sni_kw_process()
         int score;
         if(isAudioSynthetic(hdl, wavbuf, wavlen, score)){
             DEBUG_LOG("synthetic speech found, %s %d", tmpline, score);
-            tbnr_recognize(sid, wavbuf, wavlen);
+            tkw_recognize(sid, wavbuf, wavlen, tmpline);
         }
 
         DestroyWav(wavbuf, wavlen);
     }
     fclose(fp);
     sni_close(hdl);
-    tbnr_stop(sid);
+    tkw_close(sid);
 }
+
 
 int main(int argc, char *argv[])
 {
-    tbnr_init(g_ThreadNum);
+    tkw_init(g_ThreadNum);
     sni_init(g_ThreadNum);
     sni_kw_process();
     return 0;

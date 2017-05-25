@@ -418,7 +418,7 @@ namespace zen4audio{
             //if(bBamp) g_mapProjs[pid].prj->setBamp();
             if(g_PushProjAddr != NULL){
                 int refnum = g_PushProjAddr(tmpPrj);
-                for(;refnum > 0; refnum --) g_mapProjs[pid].cnt ++;
+                if(refnum > 0) g_mapProjs[pid].cnt += refnum;
             }
             //add to setPrevFullIDs.
             g_PrevFullIDsLocker.lock();

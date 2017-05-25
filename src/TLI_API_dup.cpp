@@ -11,7 +11,73 @@
 #include <cassert>
 #include <cstdlib>
 
+#define DLOPENSO
+#ifndef DLOPENSO
 #include "TLI_API.h"
+#else
+#include <dlfcn.h>
+static void *g_LidHdl;
+
+typedef int TLI_HANDLE;
+typedef int (*TLI_Init_P)(            
+							char * pszTLISystemDirectory,
+							int * pnAllTemplateIDs,
+							char ** ppszAllTemplateLocation,
+							int nAllTemplateNumber,
+							int nLineNumber
+						);
+typedef int (*TLI_Exit_P)();
+typedef int (*TLI_Open_P)(
+	TLI_HANDLE & hTLI
+);
+typedef int (*TLI_Close_P)(
+	TLI_HANDLE hTLI
+);
+typedef int (*TLI_Recognize_P)(
+	TLI_HANDLE hTLI,
+	int * pnCurrentTemplateIDs,
+	int nCurrentTemplateNumber,
+	void * pvPCMBuffer,
+	int nBytesOfBuffer,
+	int nMinLimit,
+	int nMaxLimit
+);
+typedef int (*TLI_GetResult_P)(
+	TLI_HANDLE hTLI,
+	float * pfResults,
+	int nNumber
+);
+static TLI_Init_P TLI_Init;
+static TLI_Exit_P TLI_Exit;
+static TLI_Open_P TLI_Open;
+static TLI_Close_P TLI_Close;
+static TLI_Recognize_P TLI_Recognize;
+static TLI_GetResult_P TLI_GetResult;
+
+#define GETSMPOL(x, y) \
+        x = (x##_P)dlsym(g_LidHdl, y);\
+        do{\
+           if(x == NULL){fprintf(stderr, "ERROR %s", dlerror()); exit(1);} \
+        } while(0)
+
+
+void openlideng()
+{
+    const char *lidfile = "ioacas/libTLI_API.so";
+    g_LidHdl = dlopen(lidfile, RTLD_LAZY);
+    if(g_LidHdl == NULL){
+        fprintf(stderr, "ERROR %s", dlerror());
+        exit(1);
+    }
+    GETSMPOL(TLI_Init, "_Z8TLI_InitPcPiPS_ii");
+    GETSMPOL(TLI_Exit, "_Z8TLI_Exitv");
+    GETSMPOL(TLI_Open, "_Z8TLI_OpenRi");
+    GETSMPOL(TLI_Close, "_Z9TLI_Closei");
+    GETSMPOL(TLI_GetResult, "_Z13TLI_GetResultiPfi");
+    GETSMPOL(TLI_Recognize, "_Z13TLI_RecognizeiPiiPviii");
+}
+
+#endif
 
 #define MAX_PATH 512
 static void initTLI();
@@ -88,6 +154,7 @@ void initTLI()
         g_pszAllTemplateNames[idx] = curname;
     }
     
+    openlideng();
     int tliret = TLI_Init(g_SysDirPath, g_pnAllTemplateIDs, g_pszAllTemplateNames, g_nTemplateNum, g_nThreadNum);
     if(tliret != 0){
         if(tliret == -1){

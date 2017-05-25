@@ -14,12 +14,12 @@ TESTDIR=../testZP/ioacas/
 VPATH=../src/:../src/protosrc/2.6/:../src/wav/:../../serv242_09/src/:../../serv242_09/src/audiz/
 
 CPPNAMES:=interfacezp.cpp commonFunc.cpp log4z.cpp ProjectBuffer.cpp utilites.cpp socket_ex.cpp audizcli_p.cpp
-CPPNAMES+= sni_kw_ex.cpp
+CPPNAMES+= sni_kw_ex.cpp #tkw_fork.cpp
 CPPNAMES+= waveinfo.cpp Voc2Wav.cpp WaveFunc.cpp
 CPPNAMES += FixedAudioModel.pb.cc libBAI_ex.cpp #libBAI_fork.cpp
 CNAMES := apueclient.c
 PROGNAME=libIOACAS.so
-LDLIBS +=-L${TESTDIR} -lprotobuf -lBAMP -lso_front_end_VAD -lsvml -lirng -limf -lintlc -lSNI_API -lTBNR_API #-Wl,--allow-shlib-undefined
+LDLIBS +=-Wl,-rpath=/home/ioacas/cts_linux_lstm_epd_syllable_1201704114332/KWSAPI_ENV/KWSAPI_LIBLINUX/ -L${TESTDIR} -lprotobuf -lBAMP -lso_front_end_VAD -lsvml -lirng -limf -lintlc -lSNI_API -lTBNR_API -lTKW_API
 LDFLAGS += -lpthread -shared
 CFLAGS += -Wall -fPIC -pthread -isystem ../src/protosrc/2.6/ -DLIDFORK
 ifneq (${CONF},Debug)
@@ -27,3 +27,4 @@ CFLAGS+= -O2
 else
 CFLAGS+= -g
 endif
+

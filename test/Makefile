@@ -1,7 +1,7 @@
 CC=gcc#icc
 CCC=g++#icpc
 CXX=g++#icpc
-TESTDIR:=testZP
+TESTDIR:=test09
 CPPFLAGS=-g -DTESTDIR=${TESTDIR}
 LDFLAGS:=-Wl,-rpath,${IOADIR}
 SRCCS:=$(addprefix src/,apue.c myiofuncs.c)

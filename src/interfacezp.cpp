@@ -5,6 +5,7 @@
     > Created Time: Tue 06 Sep 2016 03:31:17 AM PDT
  ************************************************************************/
 
+#include <signal.h>
 #include "sni_kw_ex.h"
 #include "libBAI_ex.h"
 #include "dllSRVADCluster_lshj.h"
@@ -49,6 +50,8 @@ unsigned dft_getTypeFromId(unsigned int id)
 std::vector<std::pair<unsigned int, std::pair<unsigned int, unsigned int> > > g_mLangReports;
 static std::map<std::pair<unsigned int, unsigned int>, int> g_mLangReportFilter;
 
+static unsigned g_AllProjs4KwSize = 0;
+
 bool g_bUseBamp = true;
 static unsigned g_uBampVadNum = 0;
 static float g_fAfterBampVadSecs = 0.05;
@@ -59,6 +62,7 @@ ConfigRoom g_AutoCfg(((string)szIoacasDir + "SysFunc.cfg").c_str());
 static bool g_bDiscardable=true;// when feeding data.
 bool g_bSaveAfterRec=false; // when after processing, for project ID.
 
+LoggerId g_StatusLogger;
 LoggerId g_logger;
 string g_strIp;
 
@@ -97,6 +101,70 @@ static bool saveWave(vector<DataBlock>& prjData, const char *savedfile)
     return ret;
 }
 
+extern unsigned char linear2alaw(short pcm_val);
+static bool saveWaveAsAlaw(char *pcmData, unsigned pcmlen, FILE *fp)
+{
+    unsigned alawlen = pcmlen /2;
+    string alawBuf;
+    alawBuf.resize(alawlen);
+    char *tmpAlaw = const_cast<char*>(alawBuf.c_str());
+    short *tmpPcm = reinterpret_cast<short*>(pcmData);
+    for(size_t idx=0; idx < alawlen; idx ++) tmpAlaw[idx] = linear2alaw(tmpPcm[idx]);
+    size_t retw = fwrite(tmpAlaw, 1, alawlen, fp);
+    if(retw != alawlen){
+	return false;
+    }
+    return true;
+}
+
+static const char g_256Zeros[256] = {'\0'};
+static bool saveWaveAsAlaw(char* pcmData, unsigned pcmlen, const char *filePath)
+{
+    FILE *fp = fopen(filePath, "wb");
+    if(fp == NULL) return false;
+    fwrite(g_256Zeros, 1, 256, fp);
+    saveWaveAsAlaw(pcmData, pcmlen, fp);
+    fclose(fp);
+    return true;
+}
+
+static bool saveWaveAsAlaw(vector<DataBlock> &blks, const char *filePath)
+{
+    FILE *fp = fopen(filePath, "wb");
+    if(fp == NULL) return false;
+    fwrite(g_256Zeros, 1, 256, fp);
+    for(size_t idx=0; idx < blks.size(); idx++){
+	saveWaveAsAlaw(blks[idx].getPtr() + blks[idx].offset, blks[idx].len, fp);
+    }
+    return true;
+}
+static bool saveWaveAsAlaw(FILE *fp, vector<DataBlock> &blks)
+{
+    unsigned len = 0;
+    for(size_t idx=0; idx < blks.size(); idx++){
+        DataBlock& curblk = blks[idx];
+        len += curblk.len;
+    }
+    if(len == 0){ return true; }
+    char * tmpAlaw = (char*)malloc(len / 2);
+    unsigned nowIdx = 0;
+    for(size_t idx=0; idx < blks.size(); idx++){
+        DataBlock& curblk = blks[idx];
+        short *tmppcm = reinterpret_cast<short*>(curblk.getPtr() + curblk.offset);
+        for(size_t jdx=0; jdx < curblk.len / 2; jdx ++){
+            tmpAlaw[nowIdx ++] = linear2alaw(tmppcm[jdx]);
+        }
+    }
+    assert(nowIdx = len / 2);
+    size_t retw = fwrite(tmpAlaw, 1, nowIdx, fp);
+    if(retw != nowIdx){
+        LOGFMT_ERROR(g_logger, "failed write data to file, size=%lu, written=%lu error: %s", nowIdx, retw, strerror(errno));
+    }
+    free(tmpAlaw);
+    if(retw != nowIdx) return false;
+    return true;
+}
+
 ///////////<<<
 /**
  * TODO 两个参数的含义还是不够明确，不知道怎么写这个函数.
@@ -109,65 +177,6 @@ int GetDLLVersion(char *p, int &length)
     strncpy(p, g_strVersion, length);
     return 1;
 }
-
-/*
-void* IoaRegThread(void *pvParam);
-
-static std::vector<std::pair<unsigned char, unsigned char> > parseLangReportsFromStr(const char*strLine)
-{
-	char tmpLine[256];
-	std::vector<std::pair<unsigned char, unsigned char> > retm;
-	strncpy(tmpLine, strLine, 256);
-	char *st = tmpLine;
-	while(true){
-		char *tkEnd = strchr(st, ',');
-		if(tkEnd != NULL) {
-			*tkEnd = '\0';
-		}
-		unsigned char f,s;
-		if(sscanf(st, "%hhu->%hhx", &f, &s) == 2){
-			retm.push_back(std::make_pair(f,s));
-		}
-		if(tkEnd == NULL) break;
-		st = tkEnd + 1;
-	}
-	return retm;
-}
-
-static std::string formLangReportsStr(const std::vector<std::pair<unsigned char, unsigned char> >& langReports)
-{
-	ostringstream oss;
-	for(unsigned i=0; i< langReports.size(); i++){
-		oss<< (int)langReports[i].first<< "->" << std::hex<< std::showbase<< (int)langReports[i].second<< std::dec<< std::noshowbase << ",";
-	}
-	return oss.str();
-}
-
-static bool parseReportFilter(const char *strLine, std::map<int, int> &filter)
-{
-    const char *st = strLine;
-    int num1, num2;
-    unsigned char tmpCh;
-    while(true){
-        if(sscanf(st, "%hhx:%d", &tmpCh, &num2) == 2){
-            num1 = tmpCh;
-            filter[num1] = num2;
-        }
-        st = strchr(st, ',');
-        if(st == NULL) break;
-        st ++;
-    }
-    return true;
-}
-static std::string formReportFilterStr(const std::map<int, int> &filter)
-{
-    std::ostringstream oss;
-    for(std::map<int,int>::const_iterator it=filter.begin(); it != filter.end(); it++){
-        oss<< std::hex<< std::showbase<< it->first<< std::dec<< std::noshowbase<< ":"<< it->second <<",";
-    }
-    return oss.str();
-}
-*/
 
 struct SpkMdlStVecImpl: public SpkMdlStVec, SpkMdlStVec::iterator
 {
@@ -183,13 +192,16 @@ static char g_AudizPath[MAX_PATH] = "../ioacases/dataCenter";
 static bool g_bUseRecSess = false;
 static SessionStruct *g_RecSess = NULL;
 
-static void initGlobal(BufferConfig &myBufCfg)
+static void initGlobal(BufferConfig &myBufCfg, string kwsysdir)
 {
     g_strIp = GetLocalIP();
     Config_getValue(&g_AutoCfg, "", "ifSkipSameProject", g_bSaveAfterRec);
     Config_getValue(&g_AutoCfg, "", "savePCMTopDir", m_TSI_SaveTopDir);
     Config_getValue(&g_AutoCfg, "", "ifUseRecSess", g_bUseRecSess);
     Config_getValue(&g_AutoCfg, "", "audizCenterDataPath", g_AudizPath);
+    Config_getValue(&g_AutoCfg, "", "sniThreadNum", g_AllProjs4KwSize);
+    Config_getValue(&g_AutoCfg, "", "kwSysDir", kwsysdir);
+
     Config_getValue(&g_AutoCfg, "bamp", "ifUseBAMP", g_bUseBamp);
     Config_getValue(&g_AutoCfg, "bamp", "reportBampThreshold", g_fReportBampThrd);
     Config_getValue(&g_AutoCfg, "bamp", "bampVadThreadNum", g_uBampVadNum);
@@ -213,6 +225,8 @@ static void initGlobal(BufferConfig &myBufCfg)
 		m_TSI_SaveTopDir[tmpLen] = '/';
 		m_TSI_SaveTopDir[tmpLen + 1] = '\0';
 	}
+
+    g_StatusLogger = g_Log4zManager->createLogger("status");
 	g_logger = g_Log4zManager->createLogger("ioacas");
     char strVer[50];
     int verLen = 50;
@@ -222,6 +236,7 @@ static void initGlobal(BufferConfig &myBufCfg)
     LOG_INFO(g_logger, "====================config====================\n" 
             LOG4Z_VAR(g_AutoCfg.configFile)
             LOG4Z_VAR(m_TSI_SaveTopDir)
+            LOG4Z_VAR(g_AllProjs4KwSize)
             LOG4Z_VAR(g_bUseBamp)
             LOG4Z_VAR(g_fReportBampThrd)
             LOG4Z_VAR(g_uBampThreadNum)
@@ -240,23 +255,50 @@ static void initGlobal(BufferConfig &myBufCfg)
             );
 }
 
+static void fakeCDLLResult4Kw(CDLLResult &res, WavDataUnit &unit)
+{
+    unit.m_pPCB = NULL;
+    res.m_iAlarmType = 0xc3;
+    //res.m_iTargetID = ;
+    res.m_iHarmLevel = 0;
+    res.m_fLikely = 100.0;
+    res.m_fTargetMatchLen = 9.0;
+    res.m_iDataUnitNum = 1;
+    res.m_fSegLikely[0] = 100.0;
+    res.m_fSegPosInPCB[0] = 0.0;
+    res.m_fSegPosInTarget[0] = 0.0;
+    res.m_pDataUnit[0] = &unit;
+}
+
+struct KwMatchThreadData{
+    KwMatchThreadData(){
+    fakeCDLLResult4Kw(res, unit);
+    }
+    CDLLResult res;
+    WavDataUnit unit;
+};
+
 struct KwMatchSpace{
-    explicit KwMatchSpace(ProjectBuffer *p):
-        prj(p), curStIdx(0), dataLen(0)
+    explicit KwMatchSpace(KwMatchThreadData *d, ProjectBuffer *p):
+        prj(p), curStIdx(0), dataLen(0), cfgId(-1)
     {
+	sharedData = d;
         prjTime = prj->getPrjTime();
         bufSize = 16000 * 6;
         afterVADBuf = (char*)malloc(bufSize + BLOCKSIZE);
         assert(afterVADBuf != NULL);
-        //pthread_mutex_init(&anoKwLock, NULL);
+	kwtxt = (char*)malloc(kwtxtLen);
+	assert(kwtxt);
+        *kwtxt = '\0';
     }
     ~KwMatchSpace(){
-        //pthread_mutex_destroy(&anoKwLock);
         free(afterVADBuf);
+        free(kwtxt);
         returnBuffer(prj);
     }
     
-    void saveAudio(unsigned short cfgType, unsigned cfgId, int score, char* output, int leftsize);
+    void genVadedFile(unsigned short cfgType, unsigned cfgId, int score);
+    void saveAudio(char* output, int leftsize);
     ProjectBuffer *prj;
     struct timeval prjTime;
     vector<DataBlock> prjData;
@@ -264,40 +306,73 @@ struct KwMatchSpace{
     char *afterVADBuf;
     unsigned bufSize;
     unsigned dataLen;
-    string kwoutfile;
-    //pthread_mutex_t anoKwLock;
+    string vadedfile; //hit by sni
+    string kwfile;
+    char *kwtxt; //hit by tkw
+    unsigned cfgId; //report cfg.
+    static const unsigned kwtxtLen = 1024;
+    KwMatchThreadData *sharedData;
 };
 
-void KwMatchSpace::saveAudio(unsigned short cfgType, unsigned cfgId, int score, char* output, int leftsize)
+
+void KwMatchSpace::genVadedFile(unsigned short cfgType, unsigned cfgId, int score)
 {
     char vadedfile[MAX_PATH];
     gen_spk_save_file(vadedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType, &cfgId, &score);
     char *lastdotptr = strrchr(vadedfile, '.');
     sprintf(lastdotptr, "%s", ".raw");
-    FILE *fp = fopen(vadedfile, "wb");
+    this->vadedfile = vadedfile;
+    kwfile = string(vadedfile, lastdotptr);
+    kwfile += ".txt";
+}
+
+void KwMatchSpace::saveAudio(char* output, int leftsize)
+{
+    if(*kwtxt == '\0') return;
+    FILE *fp = fopen(vadedfile.c_str(), "wb");
     if(fp != NULL){
         fwrite(afterVADBuf, 1, dataLen, fp);
         fclose(fp);
-        kwoutfile = string(vadedfile, lastdotptr);
-        kwoutfile +=  ".txt";
-        int plen = snprintf(output, leftsize, "VADFile=%s ", vadedfile);
+        int plen = snprintf(output, leftsize, "VADFile=%s ", vadedfile.c_str());
         output += plen;
         leftsize -= plen;
     }
     else{
         LOG_ERROR(g_logger, "failed to create vadedfile "<< vadedfile);
     }
-    char savedfile[MAX_PATH];
-    gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, prjTime.tv_sec, prj->ID, &cfgType);
-    if(saveWave(prjData, savedfile)){
-        snprintf(output, leftsize, "SAVEDFile=%s ", savedfile);
+    fp = fopen(kwfile.c_str(), "w");
+    if(fp == NULL){
+        LOG_ERROR(g_logger, "failed to create kwfile "<< kwfile);
     }
+    fprintf(fp, "%s", kwtxt);
+    fclose(fp);
+
+    if(this->cfgId != static_cast<unsigned>(-1)){
+        sharedData->unit.m_iPCBID = this->prj->ID;
+        sharedData->unit.m_pData = this->afterVADBuf;
+        sharedData->unit.m_iDataLen = this->dataLen;
+        sharedData->res.m_iTargetID = this->cfgId;
+        char savedfile[MAX_PATH];
+        unsigned short alarmType = sharedData->res.m_iAlarmType;
+        gen_spk_save_file(savedfile, m_TSI_SaveTopDir, NULL, this->prjTime.tv_sec, this->prj->ID, &(alarmType), &this->cfgId);
+        char *stSufPtr = strrchr(savedfile, '.');
+        strcpy(stSufPtr+1, "pcm");
+        snprintf(sharedData->res.m_strInfo, 1024, "%s:%s", g_strIp.c_str(), savedfile);
+        if(saveWaveAsAlaw(prjData, savedfile)){
+            int plen = snprintf(output, leftsize, "ReportFile=%s ", sharedData->res.m_strInfo);
+            output += plen;
+            leftsize -= plen;
+        }
+        g_ReportResultAddr(g_iModuleID, &(sharedData->res));
+    }
+
 }
 
 struct KwMatchThreadSpace{
     KwMatchThreadSpace(){
         idx = 0;
         nextProjID = 0;
+        passNum = sniNum = tkwNum = reportNum = 0;
         pthread_mutex_init(&splock, NULL);
     }
     ~KwMatchThreadSpace(){
@@ -307,7 +382,7 @@ struct KwMatchThreadSpace{
     bool addKwSpace(ProjectBuffer *prj){
         pthread_mutex_lock(&splock);
         assert(batchOfProjs.find(prj->ID) == batchOfProjs.end());
-        batchOfProjs[prj->ID] = new KwMatchSpace(prj);
+        batchOfProjs[prj->ID] = new KwMatchSpace(&sharedData, prj);
         pthread_mutex_unlock(&splock);
         return true;
     }
@@ -323,7 +398,7 @@ struct KwMatchThreadSpace{
         }
         else{
             ret = it->second;
-            nextProjID = ret->prj->ID;
+            nextProjID = ret->prj->ID + 1;
         }
         pthread_mutex_unlock(&splock);
         return ret;
@@ -331,20 +406,35 @@ struct KwMatchThreadSpace{
     void delKwSpace(KwMatchSpace *kwsp){
         pthread_mutex_lock(&splock);
         assert(batchOfProjs.erase(kwsp->prj->ID) == 1);
+        passNum ++;
+        if(kwsp->vadedfile != "") sniNum ++;
+        if(kwsp->kwtxt != "") tkwNum ++;
+        if(kwsp->cfgId != static_cast<unsigned>(-1)) reportNum ++;
         pthread_mutex_unlock(&splock);
         delete kwsp;
     }
+    string getStatusDescr(){
+        ostringstream oss;
+        pthread_mutex_lock(&splock);
+        oss<< "pass: "<< passNum<< " sni: "<< sniNum<< " tkw: "<< tkwNum<< " report: "<< reportNum;
+        pthread_mutex_lock(&splock);
+        return oss.str();
+    }
+
     unsigned idx;   
     map<unsigned long, KwMatchSpace*> batchOfProjs;
     pthread_mutex_t splock;
     unsigned long nextProjID;
+    KwMatchThreadData sharedData;
+    unsigned long passNum;
+    unsigned long sniNum;
+    unsigned long tkwNum;
+    unsigned long reportNum;
 private:
     KwMatchThreadSpace(const KwMatchThreadSpace&);
     KwMatchThreadSpace& operator=(const KwMatchThreadSpace&);
 };
-
 static KwMatchThreadSpace* g_AllProjs4Kw;
-static unsigned g_AllProjs4KwSize = 4;
 
 static void * bampMatchThread(void *);
 static void * KwMatchThread(void *);
@@ -352,6 +442,17 @@ static void *dummyRecThread(void *);
 static void *ioacas_maintain_procedure(void *);
 static void reportBampResultSeg(BampResultParam param, ostream& oss);
 static int addBampProj(ProjectBuffer *proj);
+
+static FILE *g_DebugTxtFp;
+static void myhndler(int signo, siginfo_t *info, void* unused)
+{
+    if(g_DebugTxtFp != NULL){
+    fprintf(g_DebugTxtFp, "signo: %d; errno: %d; code: %d; pid: %d; uid: %d; status: %d;\n",
+    info->si_signo, info->si_errno, info->si_code, info->si_pid, info->si_uid, info->si_status);
+    exit(1);
+    }
+
+}
 
 int InitDLL(int iPriority,
         int iThreadNum,
@@ -365,6 +466,17 @@ int InitDLL(int iPriority,
         LOGE("ioacas module is already initialized.");
         return 0;
     }
+
+
+    g_DebugTxtFp = fopen("ioacas/debug.txt", "a");
+struct sigaction act;
+sigemptyset(&act.sa_mask);
+act.sa_flags = SA_SIGINFO;
+act.sa_sigaction = myhndler;
+if(sigaction(SIGTERM, &act, NULL) != 0){
+printf("sigaction error!\n");
+exit(1);
+}
     g_iModuleID = iModuleID;
     g_ReportResultAddr = func;
     
@@ -372,7 +484,8 @@ int InitDLL(int iPriority,
     buffconfig.m_uBlockSize = BLOCKSIZE;
     buffconfig.m_uBlocksMin = 20 * 600;
     buffconfig.m_uBlocksMax = 20 * 600;
-    initGlobal(buffconfig);
+    string kwsysdir;
+    initGlobal(buffconfig, kwsysdir);
 
     init_bufferglobal(buffconfig, addBampProj);
     {
@@ -395,7 +508,7 @@ int InitDLL(int iPriority,
     if(g_AllProjs4KwSize > 0){
         g_AllProjs4Kw = new KwMatchThreadSpace[g_AllProjs4KwSize];
         sni_init(g_AllProjs4KwSize);
-        tbnr_init(g_AllProjs4KwSize);
+        tkw_init(g_AllProjs4KwSize, kwsysdir.c_str());
         for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++)
         {
             pthread_attr_t threadAttr;
@@ -531,15 +644,23 @@ void *KwMatchThread(void *param)
 {
     int hdl;
     sni_open(hdl);
-    int tbnrsid;
-    tbnr_start(tbnrsid);
+    int tkwsid;
+    tkw_open(tkwsid);
+    
+    unsigned transNum =0;
+    unsigned vadedNum = 0;
+    unsigned deadNum = 0;
+    unsigned procNum = 0;
     KwMatchThreadSpace *thrdSp = reinterpret_cast<KwMatchThreadSpace*>(param);
     while(true){
         KwMatchSpace *curSp = thrdSp->getNextKwSpace();
         if(curSp == NULL){
+	LOGFMT_DEBUG(g_StatusLogger, "one batch of prcess ends in session %u.\n\tchecked: %u\tvaded: %u\tprocessed: %u\n\tdeadNum: %u", thrdSp->idx, transNum, vadedNum, procNum, deadNum);
+	    transNum = vadedNum = deadNum = procNum = 0;
             sleep(1);
             continue;
         }
+	transNum ++;
         vector<DataBlock> &prjdata = curSp->prjData;
         unsigned &curidx = curSp->curStIdx;
         char *&vadbuf = curSp->afterVADBuf;
@@ -547,6 +668,7 @@ void *KwMatchThread(void *param)
         const unsigned &vadbufsize = curSp->bufSize;
 
         curSp->prj->getDataSegment(prjdata, prjdata.size(), 0);
+	if(curidx < prjdata.size()) vadedNum ++;
         while(curidx < prjdata.size()){
             short *inSmp = reinterpret_cast<short*>(prjdata[curidx].getPtr());
             unsigned inlen = prjdata[curidx].len / 2;
@@ -565,29 +687,37 @@ void *KwMatchThread(void *param)
         
         if(vadlen >= vadbufsize || curSp->prj->getFull()){
             if(vadlen < vadbufsize){
+                deadNum++;
                 //TODO under 6s, be discarded before recognition. 
-                LOGFMT_INFO(g_logger, "SNIREG PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
+                LOGFMT_INFO(g_logger, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
             }
             else{
+		procNum ++;
                 //pass through systhesized speech recognition.
                 char tmpline[1024];
                 int linelen = 0;
                 linelen += snprintf(tmpline + linelen, 1024 - linelen, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
                 LOGFMT_DEBUG(g_logger, "%sstart SSRec!", tmpline);
-                int synScore;
+		clockoutput_start("SNI_TKW");
+                int synScore = 0;
                 if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
                     linelen += snprintf(tmpline + linelen, 1024 - linelen, "CFGID=%u SCORE=%d ", 1, synScore);
-                    curSp->saveAudio(5, 1, synScore, tmpline + linelen, 1024 - linelen);
-                    tbnr_recognize(tbnrsid, reinterpret_cast<short*>(vadbuf), vadlen / 2, curSp->kwoutfile.c_str());
+		    curSp->genVadedFile(5, 1, synScore);
+		    char *kwtxt = curSp->kwtxt;
+		    unsigned kwtxtlen = curSp->kwtxtLen;
+                    tkw_recognize(tkwsid, reinterpret_cast<short*>(vadbuf), vadlen / 2, curSp->vadedfile.c_str(), kwtxt, kwtxtlen, curSp->cfgId);
+                    curSp->saveAudio(tmpline + linelen, 1024 - linelen);
                     LOGFMT_INFO(g_logger, "%sEOP", tmpline);
                 }
                 else{
                 }
+		string clockres = clockoutput_end();
+		LOGFMTT("%s %s", clockres.c_str(), synScore >0 ? "SynAudio": "");
             }
             thrdSp->delKwSpace(curSp);
         }
     }
-    tbnr_stop(tbnrsid);
+    tkw_close(tkwsid);
     sni_close(hdl);
 }
 
@@ -601,6 +731,8 @@ static inline unsigned hashPid(unsigned long pid)
     return count % g_AllProjs4KwSize;
 }
 
+static unsigned long g_BampProcessedSegNum;
+static pthread_mutex_t g_BampSegNumLocker = PTHREAD_MUTEX_INITIALIZER;
 static map<unsigned long, ProjectBuffer*> g_AllProjs4Bamp;
 static pthread_mutex_t g_AllProjs4BampLocker = PTHREAD_MUTEX_INITIALIZER;
 static int addBampProj(ProjectBuffer *proj)
@@ -622,6 +754,31 @@ static int addBampProj(ProjectBuffer *proj)
         }
     } 
 
+    return ret;
+}
+
+static void addBampSegNum(unsigned curnum)
+{
+    pthread_mutex_lock(&g_BampSegNumLocker);
+    g_BampProcessedSegNum += curnum;
+    pthread_mutex_unlock(&g_BampSegNumLocker);
+}
+static string getBampStatusDescr()
+{
+    char sztable[1024];
+    sztable[0] = '\0';
+    pthread_mutex_lock(&g_BampSegNumLocker);
+    sprintf(sztable, "SegmentCounter: %lu\n", g_BampProcessedSegNum);
+    pthread_mutex_unlock(&g_BampSegNumLocker);
+    return sztable;
+}
+
+static unsigned long getBampSegNum()
+{
+    unsigned long ret;
+    pthread_mutex_lock(&g_BampSegNumLocker);
+    ret = g_BampProcessedSegNum;
+    pthread_mutex_unlock(&g_BampSegNumLocker);
     return ret;
 }
 
@@ -662,14 +819,15 @@ void * bampMatchThread(void *)
         exit(1);
     }
     LOGFMT_INFO(g_logger, "<%lx> start bampMatchThread...", pthread_self());
-    //discharged when it is full and has none of new data.
+    bool bHasData = false;
     while(true){
         clockoutput_start("one circle of bampMatch");
-        sleep(1);
+        if(!bHasData) sleep(1);
         vector<BampMatchParam> allBufs;
         allBufs.clear();
         unsigned allcnt = 0;
         unsigned retcnt = 0;
+        unsigned segsnum = 0;
         while(true){
             ProjectBuffer* tmpPrj = getNextBampProj();
             if(tmpPrj == NULL) break;
@@ -689,11 +847,13 @@ void * bampMatchThread(void *)
             for(size_t jdx=0; jdx < tmpPar.data.size(); jdx++){
                 tmpPar.tolLen += tmpPar.data[jdx].len;
             }
+            segsnum += tmpPar.data.size();
             assert(tmpPar.tolLen % g_uBampFixedLen == 0);
             allBufs.push_back(tmpPar);
         }
-        LOGFMT_DEBUG(g_logger, "one loop of bamp match, BampProjectNum: %u; ReturnBampProjectNum: %u; BampTaskNum: %lu.", allcnt, retcnt, allBufs.size());
+        LOGFMT_DEBUG(g_StatusLogger, "one loop of bamp match, checkedNum: %u; deadNum: %u; validNum: %lu.", allcnt, retcnt, allBufs.size());
         if(allBufs.size() > 0){
+            bHasData = true;
             obj->bamp_match_vad(allBufs);
             for(size_t idx=0; idx < allBufs.size(); idx++){
                 BampMatchParam &par = allBufs[idx];
@@ -701,14 +861,16 @@ void * bampMatchThread(void *)
                 //append reported file here.
                 appendDataToReportFile(par);
             }
+            addBampSegNum(segsnum);
+        }
+        else{
+            bHasData = false;
         }
         string output = clockoutput_end();
         LOGFMTT(output.c_str());
     }
     return NULL;
 }
-
-
 
 int CloseDLL()
 {
@@ -764,52 +926,6 @@ int GetDataNum4Process(int iType[], int num[])
 {
     LOG_INFO(g_logger, "GetDataNum4Process unimplemented.");
     return 0;
-}
-
-extern unsigned char linear2alaw(short pcm_val);
-bool saveWaveAsAlaw(char* pcmData, unsigned pcmlen, const char *filePath)
-{
-    FILE *fp = fopen(filePath, "wb");
-    if(fp == NULL) return false;
-    char zero = '\0';
-    for(size_t idx=0; idx < 256; idx++){
-        fwrite(&zero, 1, 1, fp);
-    }
-    string alawBuf;
-    alawBuf.resize(pcmlen / 2);
-    char *tmpAlaw = const_cast<char*>(alawBuf.c_str());
-    short *tmpPcm = reinterpret_cast<short*>(pcmData);
-    for(size_t idx=0; idx < pcmlen /2; idx ++) tmpAlaw[idx] = linear2alaw(tmpPcm[idx]);
-    fwrite(tmpAlaw, 1, pcmlen /2, fp);
-    fclose(fp);
-    return true;
-}
-
-bool saveWaveAsAlaw(FILE *fp, vector<DataBlock> &blks)
-{
-    unsigned len = 0;
-    for(size_t idx=0; idx < blks.size(); idx++){
-        DataBlock& curblk = blks[idx];
-        len += curblk.len;
-    }
-    if(len == 0){ return true; }
-    char * tmpAlaw = (char*)malloc(len / 2);
-    unsigned nowIdx = 0;
-    for(size_t idx=0; idx < blks.size(); idx++){
-        DataBlock& curblk = blks[idx];
-        short *tmppcm = reinterpret_cast<short*>(curblk.getPtr() + curblk.offset);
-        for(size_t jdx=0; jdx < curblk.len / 2; jdx ++){
-            tmpAlaw[nowIdx ++] = linear2alaw(tmppcm[jdx]);
-        }
-    }
-    assert(nowIdx = len / 2);
-    size_t retw = fwrite(tmpAlaw, 1, nowIdx, fp);
-    if(retw != nowIdx){
-        LOGFMT_ERROR(g_logger, "failed write data to file, size=%lu, written=%lu error: %s", nowIdx, retw, strerror(errno));
-    }
-    free(tmpAlaw);
-    if(retw != nowIdx) return false;
-    return true;
 }
 
 static char g_sz256Zero[256];
@@ -893,10 +1009,23 @@ bool reportIoacasResult(CDLLResult &result, char *writeLog, unsigned &len)
     return true;
 }
 
+static void printStatus()
+{
+    string statStr;
+    getBufferStatus(statStr);
+    LOGFMT_INFO(g_StatusLogger, "*************buffer status*************\n%s", statStr.c_str());
+    ostringstream oss;
+    for(unsigned idx=0; idx < g_AllProjs4KwSize; idx++){
+        oss << g_AllProjs4Kw[idx].getStatusDescr() << endl;
+    }
+    LOGFMT_INFO(g_StatusLogger, "*************tkwmatch status*************\n%s", oss.str().c_str());
+    LOGFMT_INFO(g_StatusLogger, "*************bamp status*************\n%s", getBampStatusDescr().c_str());
+}
+
 void *ioacas_maintain_procedure(void *)
 {
     while(true){
-
+        sleep(3);
         time_t cur_time;
         time(&cur_time);
 
@@ -909,8 +1038,13 @@ void *ioacas_maintain_procedure(void *)
                 }
             }
         }
-        //ioareg_maintain_procedure(cur_time);
-        sleep(3);
+        if(true){
+            static time_t lasttime;
+            if(cur_time > 30 + lasttime){
+                lasttime = cur_time;
+                 printStatus();      
+            }
+        }
     }
     return NULL;
 }
@@ -948,4 +1082,10 @@ void *dummyRecThread(void *)
     }
 
     return NULL;
+}
+
+extern "C"{
+void _ZSt24__throw_out_of_range_fmtPKcz()
+{
+}
 }

@@ -1,3 +1,4 @@
+#define CHECK_PERFOMANCE
 #include "commonFunc.h"
 #include "porting.h"
 
