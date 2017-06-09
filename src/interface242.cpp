@@ -46,8 +46,35 @@ static std::map<std::pair<unsigned int, unsigned int>, int> g_mLangReportFilter;
 
 //------------------------spk part--------------
 const unsigned short g_uSpkServType = 0x92;
+static pthread_mutex_t g_SpkRepLock = PTHREAD_MUTEX_INITIALIZER;
 static float g_fSpkReportThreshold = 0.0;
+static map<unsigned, float> g_mSpkRepThds;
+static const char* g_SpkRepThdsFile = "ioacas/speakerReport.txt";
+static const char *g_SpkRepNofityFile = "ioacas/speakerReport";
+static float getSpkRepThd(unsigned spkId)
+{
+    pthread_mutex_lock(&g_SpkRepLock);
+    int ret = g_fSpkReportThreshold;
+    if(g_mSpkRepThds.find(spkId) != g_mSpkRepThds.end()){
+        if(ret < g_mSpkRepThds[spkId]){
+            ret = g_mSpkRepThds[spkId];
+        }
+    }
+    pthread_mutex_unlock(&g_SpkRepLock);
+    return ret;
+}
 
+static void setSpkRepThd(float score, unsigned *cfgId = NULL)
+{
+    pthread_mutex_lock(&g_SpkRepLock);
+    if(cfgId != NULL){
+        g_mSpkRepThds[*cfgId] = score;
+    }
+    else{
+        g_fSpkReportThreshold = score;
+    }
+    pthread_mutex_unlock(&g_SpkRepLock);
+}
 /*****************
  * param str eg: 11->1;10->2;
  * return list eg:[(11,1), (10,2)]
@@ -133,6 +160,31 @@ static std::string formReportFilterStr(std::map<std::pair<unsigned int, unsigned
     return oss.str();
 }
 
+/**
+ * 每行有两个数值， spkid spkscore
+ *
+ */
+static void updateSpeakerThresholds()
+{
+    FILE *fp = fopen(g_SpkRepThdsFile, "r");   
+    if(fp == NULL ){
+        LOGFMT_WARN(g_logger, "updateSpeakerThresholds failed to open spkRepThdsFile %s", g_SpkRepThdsFile);
+        return;
+    }
+    LOGFMT_INFO(g_logger, "updateSpeakerThresholds begin loading file %s.", g_SpkRepThdsFile);
+    pthread_mutex_lock(&g_SpkRepLock);
+    g_mSpkRepThds.clear();
+    char tmpline[100];
+    while(fgets(tmpline, 100, fp) != NULL){
+        unsigned cfgId;
+        int score;
+        if(sscanf(tmpline, "%u %d", cfgId, score) < 2) continue;
+        g_mSpkRepThds[cfgId] = score;
+    }
+    pthread_mutex_lock(&g_SpkRepLock);
+    fclose(fp);
+}
+
 const char szIoacasDir[]="./ioacas/";
 ConfigRoom g_AutoCfg(((string)szIoacasDir + "SysFunc.cfg").c_str());
 
@@ -160,17 +212,51 @@ int GetDLLVersion(char *p, int &length)
     return 1;
 }
 
+typedef struct{
+	float m_0Value;
+	float  m_100Value;
+	float m_maxValue;// in term of original score.
+} ScoreConfig;
+typedef float (*TransScore)(float);
+
+static ScoreConfig g_cfg;
+static char g_SCinit = 0;
+static float trans_score(float f)
+{
+	if(f > g_cfg.m_maxValue) f = g_cfg.m_maxValue;
+	return (f - g_cfg.m_0Value) * ((100) / (g_cfg.m_100Value - g_cfg.m_0Value));
+}
+TransScore getScoreFunc(ScoreConfig *param = NULL)
+{
+	if(param == NULL && g_SCinit == 0){
+		g_cfg.m_0Value = 0.0;
+		g_cfg.m_100Value = 100.0;
+		g_cfg.m_maxValue = 100.0;
+	}
+	else if(param != NULL){
+		g_SCinit = 1;
+		g_cfg = *param;
+        g_cfg.m_maxValue = g_cfg.m_100Value;
+	}
+	return trans_score;
+}
+
 static void initGlobal(BufferConfig &myBufCfg)
 {
     string langReports = "14 0x20,";
     string langReportFilter = "0x20 99,";
 
+    ScoreConfig ssCfg;
+    ssCfg.m_0Value = 0;
+    ssCfg.m_100Value = 100;
     Config_getValue(&g_AutoCfg, "", "eth4ReportIP", g_szEth4ReportIP);
     Config_getValue(&g_AutoCfg, "", "ifSkipSameProject", g_bSaveAfterRec);
     Config_getValue(&g_AutoCfg, "", "savePCMTopDir", m_TSI_SaveTopDir);
     Config_getValue(&g_AutoCfg, "lid", "languageReports", langReports);
     Config_getValue(&g_AutoCfg, "lid", "langReportFilter", langReportFilter);
     Config_getValue(&g_AutoCfg, "spk", "reportThreshold", g_fSpkReportThreshold);
+    Config_getValue(&g_AutoCfg, "spk", "zeroScore", ssCfg.m_0Value);
+    Config_getValue(&g_AutoCfg, "spk", "hundredScore", ssCfg.m_100Value);
 
     Config_getValue(&g_AutoCfg, "projectBuffer", "ifDiscardable", g_bDiscardable);
     Config_getValue(&g_AutoCfg, "projectBuffer", "waitSecondsStep", myBufCfg.waitSecondsStep);
@@ -204,6 +290,8 @@ static void initGlobal(BufferConfig &myBufCfg)
             LOG4Z_VAR(g_bDiscardable)
             LOG4Z_VAR(g_bSaveAfterRec)
             LOG4Z_VAR(g_fSpkReportThreshold)
+             LOG4Z_VAR(ssCfg.m_0Value)
+             LOG4Z_VAR(ssCfg.m_100Value)
             LOG4Z_VAR(formLangReportsStr(g_mLangReports).c_str()) LOG4Z_VAR(formReportFilterStr(g_mLangReportFilter).c_str())
             LOG4Z_VAR(g_AutoCfg.configFile)
             LOG4Z_VAR(myBufCfg.waitSecondsStep)
@@ -213,6 +301,8 @@ static void initGlobal(BufferConfig &myBufCfg)
             LOG4Z_VAR(myBufCfg.m_uBlocksMin)
             LOG4Z_VAR(myBufCfg.m_uBlocksMax)
             );
+    updateSpeakerThresholds();
+    getScoreFunc(&ssCfg);
 }
 
 
@@ -408,11 +498,15 @@ bool reportIoacasResult(CDLLResult &result, char *writeLog, unsigned &len)
         brep = true;
     }
     else if(result.m_iAlarmType == g_uSpkServType){
-        if(result.m_fLikely >= g_fSpkReportThreshold) brep = true;
+        result.m_fLikely = getScoreFunc()(result.m_fLikely);
+        if(result.m_fLikely >= getSpkRepThd(configID)) brep = true;
     }
     
     if(brep){
         g_ReportResultAddr(g_iModuleID, &result);
+        if(writeLog != NULL){
+            len += sprintf(writeLog + len, "Reported ");
+        }
         const char* debugDir = "ioacas/debug/";
         if(if_directory_exists(debugDir)){
             char wholePath[MAX_PATH];
@@ -445,32 +539,45 @@ void maintain_newreported(time_t curtime, unsigned seconds)
 void *ioacas_maintain_procedure(void *)
 {
     while(true){
-    sleep(3);
-    //select(NULL, NULL, NULL, NULL, &steptv);
-    time_t cur_time;
-    time(&cur_time);
+        sleep(3);
+        //select(NULL, NULL, NULL, NULL, &steptv);
+        time_t cur_time;
+        time(&cur_time);
 
-    if(true){
-        //maitain project filter.
-        pthread_mutex_lock(&g_lockNewReported);
-        static time_t projectfilterlasttime = 0;
-        if(cur_time   > 3600 + projectfilterlasttime){
-            projectfilterlasttime = cur_time;
-            maintain_newreported(cur_time, 3600 * 5);
+        if(true){
+            //maitain project filter.
+            pthread_mutex_lock(&g_lockNewReported);
+            static time_t projectfilterlasttime = 0;
+            if(cur_time   > 3600 + projectfilterlasttime){
+                projectfilterlasttime = cur_time;
+                maintain_newreported(cur_time, 3600 * 5);
+            }
+            pthread_mutex_unlock(&g_lockNewReported);
         }
-        pthread_mutex_unlock(&g_lockNewReported);
-    }
-    if(true){
-        //update some configurations.
-        static time_t lasttime;
-        if(cur_time > 3 + lasttime){
-            lasttime = cur_time;
-            if(g_AutoCfg.checkAndLoad()){
+        if(true){
+            //update some configurations.
+            static time_t lasttime;
+            if(cur_time > 3 + lasttime){
+                lasttime = cur_time;
+                if(g_AutoCfg.checkAndLoad()){
+                    if(g_AutoCfg.isUpdated("spk", "reportThreshold")){
+                        float score;
+                        Config_getValue(&g_AutoCfg, "spk", "reportThreshold", score);
+                        setSpkRepThd(score);
+                        LOGFMT_INFO(g_logger, "updateConfig spk.reportThreshold updated to %.2f", score);
+                    }
+                }
             }
         }
+        if(true){
+            FILE *fp = fopen(g_SpkRepNofityFile, "r");
+            if(fp != NULL){
+                updateSpeakerThresholds();
+                fclose(fp);
+                remove(g_SpkRepNofityFile);
+            }
+        }
+        ioareg_maintain_procedure(cur_time);
     }
-    ioareg_maintain_procedure(cur_time);
-
-}
     return NULL;
 }

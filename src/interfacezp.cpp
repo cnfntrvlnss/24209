@@ -192,7 +192,7 @@ static char g_AudizPath[MAX_PATH] = "../ioacases/dataCenter";
 static bool g_bUseRecSess = false;
 static SessionStruct *g_RecSess = NULL;
 
-static void initGlobal(BufferConfig &myBufCfg, string kwsysdir)
+static void initGlobal(BufferConfig &myBufCfg, string &kwsysdir)
 {
     g_strIp = GetLocalIP();
     Config_getValue(&g_AutoCfg, "", "ifSkipSameProject", g_bSaveAfterRec);
@@ -284,6 +284,7 @@ struct KwMatchSpace{
     {
 	sharedData = d;
         prjTime = prj->getPrjTime();
+        chckPrjId = prj->subscribeReflesh();
         bufSize = 16000 * 6;
         afterVADBuf = (char*)malloc(bufSize + BLOCKSIZE);
         assert(afterVADBuf != NULL);
@@ -300,6 +301,7 @@ struct KwMatchSpace{
     void genVadedFile(unsigned short cfgType, unsigned cfgId, int score);
     void saveAudio(char* output, int leftsize);
     ProjectBuffer *prj;
+    int chckPrjId;
     struct timeval prjTime;
     vector<DataBlock> prjData;
     unsigned curStIdx;
@@ -389,20 +391,7 @@ struct KwMatchThreadSpace{
     /**
      * 返回下一个待处理的节目；若到达了末尾，返回NULL.
      */
-    KwMatchSpace *getNextKwSpace(){
-        KwMatchSpace *ret = NULL;
-        pthread_mutex_lock(&splock);
-        map<unsigned long, KwMatchSpace*>::iterator it = batchOfProjs.lower_bound(nextProjID);
-        if(it == batchOfProjs.end()){
-            nextProjID = 0;
-        }
-        else{
-            ret = it->second;
-            nextProjID = ret->prj->ID + 1;
-        }
-        pthread_mutex_unlock(&splock);
-        return ret;
-    }
+    KwMatchSpace *getNextKwSpace();
     void delKwSpace(KwMatchSpace *kwsp){
         pthread_mutex_lock(&splock);
         assert(batchOfProjs.erase(kwsp->prj->ID) == 1);
@@ -416,7 +405,8 @@ struct KwMatchThreadSpace{
     string getStatusDescr(){
         ostringstream oss;
         pthread_mutex_lock(&splock);
-        oss<< "pass: "<< passNum<< " sni: "<< sniNum<< " tkw: "<< tkwNum<< " report: "<< reportNum;
+        oss<< "pass: "<< passNum<< " sni: "<< sniNum<< " tkw: "<< tkwNum<< " report: "<< reportNum<< endl;
+        oss<< "current: "<< batchOfProjs.size();
         pthread_mutex_lock(&splock);
         return oss.str();
     }
@@ -434,6 +424,32 @@ private:
     KwMatchThreadSpace(const KwMatchThreadSpace&);
     KwMatchThreadSpace& operator=(const KwMatchThreadSpace&);
 };
+
+
+KwMatchSpace *KwMatchThreadSpace::getNextKwSpace()
+{
+    KwMatchSpace *ret = NULL;
+    pthread_mutex_lock(&splock);
+    while(true){
+        map<unsigned long, KwMatchSpace*>::iterator it = batchOfProjs.lower_bound(nextProjID);
+        if(it == batchOfProjs.end()){
+            nextProjID = 0;
+        }
+        else{
+            ret = it->second;
+            nextProjID = ret->prj->ID + 1;
+        }
+        if(ret->chckPrjId != -1){
+            if(!ret ->prj->checkReflesh(ret->chckPrjId)){
+                continue;
+            }
+        }
+        break;
+    }
+    pthread_mutex_unlock(&splock);
+    return ret;
+}
+
 static KwMatchThreadSpace* g_AllProjs4Kw;
 
 static void * bampMatchThread(void *);
@@ -475,7 +491,7 @@ act.sa_flags = SA_SIGINFO;
 act.sa_sigaction = myhndler;
 if(sigaction(SIGTERM, &act, NULL) != 0){
 printf("sigaction error!\n");
-exit(1);
+_exit(1);
 }
     g_iModuleID = iModuleID;
     g_ReportResultAddr = func;
@@ -646,7 +662,7 @@ void *KwMatchThread(void *param)
     sni_open(hdl);
     int tkwsid;
     tkw_open(tkwsid);
-    
+
     unsigned transNum =0;
     unsigned vadedNum = 0;
     unsigned deadNum = 0;
@@ -655,12 +671,12 @@ void *KwMatchThread(void *param)
     while(true){
         KwMatchSpace *curSp = thrdSp->getNextKwSpace();
         if(curSp == NULL){
-	LOGFMT_DEBUG(g_StatusLogger, "one batch of prcess ends in session %u.\n\tchecked: %u\tvaded: %u\tprocessed: %u\n\tdeadNum: %u", thrdSp->idx, transNum, vadedNum, procNum, deadNum);
-	    transNum = vadedNum = deadNum = procNum = 0;
+            LOGFMT_DEBUG(g_StatusLogger, "one batch of prcess ends in session %u.\n\tchecked: %u\tvaded: %u\tprocessed: %u\n\tdeadNum: %u", thrdSp->idx, transNum, vadedNum, procNum, deadNum);
+            transNum = vadedNum = deadNum = procNum = 0;
             sleep(1);
             continue;
         }
-	transNum ++;
+        transNum ++;
         vector<DataBlock> &prjdata = curSp->prjData;
         unsigned &curidx = curSp->curStIdx;
         char *&vadbuf = curSp->afterVADBuf;
@@ -668,7 +684,7 @@ void *KwMatchThread(void *param)
         const unsigned &vadbufsize = curSp->bufSize;
 
         curSp->prj->getDataSegment(prjdata, prjdata.size(), 0);
-	if(curidx < prjdata.size()) vadedNum ++;
+        if(curidx < prjdata.size()) vadedNum ++;
         while(curidx < prjdata.size()){
             short *inSmp = reinterpret_cast<short*>(prjdata[curidx].getPtr());
             unsigned inlen = prjdata[curidx].len / 2;
@@ -684,7 +700,7 @@ void *KwMatchThread(void *param)
             }
             curidx++;
         }
-        
+
         if(vadlen >= vadbufsize || curSp->prj->getFull()){
             if(vadlen < vadbufsize){
                 deadNum++;
@@ -692,27 +708,27 @@ void *KwMatchThread(void *param)
                 LOGFMT_INFO(g_logger, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f too short to start SSRec.", curSp->prj->ID, ((prjdata.size()) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
             }
             else{
-		procNum ++;
+                procNum ++;
                 //pass through systhesized speech recognition.
                 char tmpline[1024];
                 int linelen = 0;
                 linelen += snprintf(tmpline + linelen, 1024 - linelen, "SNIREC PID=%lu WaveLen=%u VADLen=%.2f ", curSp->prj->ID, ((curidx+1) * BLOCKSIZE) / 16000, (float)vadlen / 16000);
                 LOGFMT_DEBUG(g_logger, "%sstart SSRec!", tmpline);
-		clockoutput_start("SNI_TKW");
+                clockoutput_start("SNI_TKW");
                 int synScore = 0;
                 if(isAudioSynthetic(hdl, reinterpret_cast<short*>(vadbuf), vadlen / 2, synScore)){
                     linelen += snprintf(tmpline + linelen, 1024 - linelen, "CFGID=%u SCORE=%d ", 1, synScore);
-		    curSp->genVadedFile(5, 1, synScore);
-		    char *kwtxt = curSp->kwtxt;
-		    unsigned kwtxtlen = curSp->kwtxtLen;
+                    curSp->genVadedFile(5, 1, synScore);
+                    char *kwtxt = curSp->kwtxt;
+                    unsigned kwtxtlen = curSp->kwtxtLen;
                     tkw_recognize(tkwsid, reinterpret_cast<short*>(vadbuf), vadlen / 2, curSp->vadedfile.c_str(), kwtxt, kwtxtlen, curSp->cfgId);
                     curSp->saveAudio(tmpline + linelen, 1024 - linelen);
                     LOGFMT_INFO(g_logger, "%sEOP", tmpline);
                 }
                 else{
                 }
-		string clockres = clockoutput_end();
-		LOGFMTT("%s %s", clockres.c_str(), synScore >0 ? "SynAudio": "");
+                string clockres = clockoutput_end();
+                LOGFMTT("%s %s", clockres.c_str(), synScore >0 ? "SynAudio": "");
             }
             thrdSp->delKwSpace(curSp);
         }

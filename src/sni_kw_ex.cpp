@@ -482,7 +482,7 @@ void tkw_exit()
 
 bool tkw_init(int sessnum, const char *kwSysDir)
 {
-    if(kwSysDir != NULL){
+    if(kwSysDir != NULL && *kwSysDir != '\0'){
         g_TKSysDir = kwSysDir;
     }
     BLOGD("start tkw_init.");

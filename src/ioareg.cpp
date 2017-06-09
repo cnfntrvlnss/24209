@@ -88,7 +88,7 @@ static char szSpkCfgFile[MAX_PATH] = "./ioacas/runSpk.cfg";
 bool g_bUseSpk = true;
 static bool g_bSpkUseVad = false;
 static bool g_bSpkUseMCut = false;
-static float defaultSpkScoreThrd;
+//static float defaultSpkScoreThrd;
 //static queue<pair<const SpkInfoChd*, map<pthread_t, unsigned long> > > g_PendingDeleteSpks;
 
 bool SpkInfoChd::fromStr(const char* strSpk){
@@ -159,35 +159,6 @@ bool addSpkPerFile(const char* szDir, const char* filename)
     return ret;
 }
 
-typedef struct{
-	float m_0Value;
-	float  m_100Value;
-	float m_maxValue;// in term of original score.
-} ScoreConfig;
-typedef float (*TransScore)(float);
-
-static ScoreConfig g_cfg;
-static char g_SCinit = 0;
-static float trans_score(float f)
-{
-	if(f > g_cfg.m_maxValue) f = g_cfg.m_maxValue;
-	return (f - g_cfg.m_0Value) * ((100) / (g_cfg.m_100Value - g_cfg.m_0Value));
-}
-TransScore getScoreFunc(ScoreConfig *param)
-{
-	if(param == NULL && g_SCinit == 0){
-		g_cfg.m_0Value = 0.0;
-		g_cfg.m_100Value = 100.0;
-		g_cfg.m_maxValue = 100.0;
-	}
-	else if(param != NULL){
-		g_SCinit = 1;
-		g_cfg = *param;
-        g_cfg.m_maxValue = g_cfg.m_100Value;
-	}
-	return trans_score;
-}
-
 
 static void ioareg_updateConfig()
 {
@@ -210,6 +181,12 @@ static void ioareg_updateConfig()
             g_szAllPrjsDir[tmpLen + 1] = '\0';
         }
         pthread_mutex_lock(&g_AllProjsDirLock);
+    }
+    if(g_AutoCfg.isUpdated("spk", "defaultThreshold")){
+        float score;
+        Config_getValue(&g_AutoCfg, "spk", "defaultThreshold", score);
+        setDefSpkThrd(score);
+        LOGFMT_INFO(g_logger, "ioareg_updateConfig spk.defaultThreshold updated to %.2f", score);
     }
 }
 
@@ -266,6 +243,9 @@ static void operate_spklib_offline()
             if(!spkex_addSpk(curspk, modeldata, modellen)){
                 delete curspk;
             }
+            else{
+                LOGFMT_INFO(g_logger, "operator_spklib_offline success to add speaker %s", modelname);
+            }
 			free(modeldata);
 			fclose(mdfd);
 		}
@@ -276,6 +256,7 @@ static void operate_spklib_offline()
 				continue;
 			}
             spkex_rmSpk(speakid);
+            LOGFMT_INFO(g_logger, "operator_spklib_offline remove speaker %u", speakid);
 		}
 	}
 	int retrm = remove(taskfile.c_str());
@@ -342,9 +323,7 @@ LOGFMT_WARN(g_logger, "in gen_task_with_local_samples, failed to create file %s.
 
 bool ioareg_init()
 {
-    ScoreConfig ssCfg;
-    ssCfg.m_0Value = 0;
-    ssCfg.m_100Value = 100;
+    float defaultSpkScore;
     Config_getValue(&g_AutoCfg, "", "saveAllTopDir", g_szAllPrjsDir);
     Config_getValue(&g_AutoCfg, "", "saveDebugTopDir", g_szDebugBinaryDir);
     Config_getValue(&g_AutoCfg, "", "ifUseVAD", g_bUseVAD);
@@ -356,9 +335,7 @@ bool ioareg_init()
     Config_getValue(&g_AutoCfg, "spk", "ifUseSPK", g_bUseSpk);
     Config_getValue(&g_AutoCfg, "spk", "ifUseVAD", g_bSpkUseVad);
     Config_getValue(&g_AutoCfg, "spk", "ifUseMusicDetect", g_bSpkUseMCut);
-    Config_getValue(&g_AutoCfg, "spk", "zeroScore", ssCfg.m_0Value);
-    Config_getValue(&g_AutoCfg, "spk", "hundredScore", ssCfg.m_100Value);
-    Config_getValue(&g_AutoCfg, "spk", "defaultThreshold", defaultSpkScoreThrd);
+    Config_getValue(&g_AutoCfg, "spk", "defaultThreshold", defaultSpkScore);
     unsigned tmpLen = strlen(g_szAllPrjsDir);
     if(tmpLen > 0 && g_szAllPrjsDir[tmpLen - 1] != '/'){
         g_szAllPrjsDir[tmpLen] = '/';
@@ -381,9 +358,7 @@ bool ioareg_init()
              LOG4Z_VAR(g_bSpkUseVad)
              LOG4Z_VAR(g_bSpkUseMCut)
              LOG4Z_VAR(g_iMusicPrecent)
-             LOG4Z_VAR(defaultSpkScoreThrd)
-             LOG4Z_VAR(ssCfg.m_0Value)
-             LOG4Z_VAR(ssCfg.m_100Value)
+             LOG4Z_VAR(defaultSpkScore)
             );
 
     int err = pthread_key_create(&g_RecWavBufsKey, free);
@@ -398,11 +373,11 @@ bool ioareg_init()
             return false;
         }
         else{
+            setDefSpkThrd(defaultSpkScore);
             LOG_INFO(g_logger, "finish initializing spk engine.");
         }
-        getScoreFunc(&ssCfg);
-//TODO generate offline task with all samples in SpkModelTrans.
-gen_task_with_local_samples();
+        //add all local samples.
+        gen_task_with_local_samples();
     }
     if(g_bSpkUseVad){
         if(!InitVADCluster(szSpkVADCfg)){
@@ -740,12 +715,12 @@ timespk = clockoutput_end();
         res.m_iAlarmType = rspk->servType;
         res.m_iTargetID = rspk->spkId;
         res.m_iHarmLevel = rspk->harmLevel;
-        res.m_fLikely = getScoreFunc(NULL)(score);
+        res.m_fLikely = score;
         res.m_fSegLikely[0] = res.m_fLikely;
         returnSpkInfo(spk);
-        if(res.m_fLikely >=defaultSpkScoreThrd){
+        //if(res.m_fLikely >=defaultSpkScoreThrd){
             reportIoacasResult(rec.result, WriteLog, logLen);
-        }
+        //}
         break;
     }
     LOGFMTT("%s %s %s %s", clockoutput_end().c_str(), timemusic.c_str(),timevad.c_str(), timespk.c_str());

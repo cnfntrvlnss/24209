@@ -8,7 +8,6 @@
 #include "spk_ex.h"
 #include <stdlib.h>
 
-#include <pthread.h>
 #include <cassert>
 #include <cstdio>
 
@@ -100,45 +99,6 @@ using namespace std;
 #define SLOGE_FMT(fmt, ...) fprintf(stderr, "ERROR " fmt "\n", ##__VA_ARGS__)
 #define SLOGW_FMT(fmt, ...) fprintf(stderr, "WARN " fmt "\n", ##__VA_ARGS__)
 
-struct RefCounterImpl: public RefCounter
-{
-    RefCounterImpl(){
-        cnt = 0;
-        pthread_mutex_init(&lock, NULL);
-    }
-    ~RefCounterImpl(){
-        pthread_mutex_destroy(&lock);
-    }
-    void incr(){
-        pthread_mutex_lock(&lock);
-        cnt ++;
-        pthread_mutex_unlock(&lock);
-    }
-    int decr(){
-        pthread_mutex_lock(&lock);
-        int ret = cnt --;
-        pthread_mutex_unlock(&lock);
-        return ret;
-    }
-    int get(){
-        pthread_mutex_lock(&lock);
-        int ret = cnt;
-        pthread_mutex_unlock(&lock);
-        return ret;
-    }
-
-    pthread_mutex_t lock;
-    int cnt;
-private:
-    RefCounterImpl(const RefCounterImpl&);
-    RefCounterImpl& operator=(const RefCounterImpl&);
-};
-
-RefCounter* RefCounter::getInstance()
-{
-    return new RefCounterImpl();   
-}
-
 bool SpkInfo::fromStr(const char* param)
 {
     istringstream iss(param);
@@ -152,6 +112,7 @@ string SpkInfo::toStr() const
     return oss.str();
 }
 
+/*
 class SpkInfoEx: public SpkInfo
 {
     char flag;
@@ -175,23 +136,7 @@ public:
     }
     bool operator==(const SpkInfo& oth) const;
 };
-
-
-struct SpkCheckBook{
-    explicit SpkCheckBook(SpkInfo* s=NULL, int i=-1):
-        spk(s), idx(i)
-    {}
-    SpkInfo *spk;
-    int idx;
-    set<SpkInfo*> oldSpks;
-};
-
-vector<void*> g_vecSpeakerModels;
-vector<unsigned long> g_vecSpeakerIDs;
-map<unsigned long, SpkCheckBook > g_mapAllSpks;
-static float spkex_ScoreThreshold = 0.0001;
-pthread_rwlock_t g_SpkInfoRwlock = PTHREAD_RWLOCK_INITIALIZER;
-
+*/
 
 class SLockHelper{
 public:
@@ -213,6 +158,28 @@ private:
     bool bRdlock;
 };
 
+struct SpkCheckBook{
+    explicit SpkCheckBook(SpkInfo* s=NULL, int i=-1):
+        spk(s), idx(i)
+    {}
+    SpkInfo *spk;
+    int idx;
+    set<SpkInfo*> oldSpks;
+};
+
+static float defaultSpkScoreThrd = 0.0;
+static vector<void*> g_vecSpeakerModels;
+static vector<unsigned long> g_vecSpeakerIDs;
+static map<unsigned long, SpkCheckBook > g_mapAllSpks;
+//static float spkex_ScoreThreshold = 0.0001;
+static pthread_rwlock_t g_SpkInfoRwlock = PTHREAD_RWLOCK_INITIALIZER;
+
+void setDefSpkThrd(float score)
+{
+    SLockHelper lock(&g_SpkInfoRwlock);
+    defaultSpkScoreThrd = score;
+}
+
 void spkex_getAllSpks(vector<const SpkInfo*> &outSpks)
 {
     SLockHelper mylock(&g_SpkInfoRwlock, false);
@@ -233,6 +200,13 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
         SLOGE_FMT("in spkex_addSpk, failed to call TIT_SPKID_SAVE_MDL_IVEC, error: %d.", titret);
         return false;
     }
+    void *spkmdl = NULL;
+    titret = TIT_SPKID_LOAD_MDL_IVEC(spkmdl, fname.c_str());
+    if(titret != StsNoError){
+        SLOGE_FMT("in spkex_addSpk, failed to call TIT_SPKID_LOAD_MDL_IVEC, error: %d.", titret);
+        return false;
+    }
+
     const unsigned long &spkId = spk->spkId;
     int spkIdx = -1;
     if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end()){
@@ -240,15 +214,15 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
         if(oldSpk != NULL){
             spkIdx = g_mapAllSpks[spkId].idx;
             TIT_SPKID_DEL_MDL(g_vecSpeakerModels[spkIdx]);
-        }
-        if(oldSpk != spk){
-            if(oldSpk->cnter->get() > 0){
-                g_mapAllSpks[spkId].oldSpks.insert(oldSpk);   
+            if(oldSpk != spk){
+                if(oldSpk->add(0) > 0){
+                    g_mapAllSpks[spkId].oldSpks.insert(oldSpk);   
+                }
+                else{
+                    delete oldSpk;
+                }
+                g_mapAllSpks[spkId].spk = spk;
             }
-            else{
-                delete oldSpk;
-            }
-            g_mapAllSpks[spkId].spk = spk;
         }
     }
     else{
@@ -257,11 +231,7 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
         g_vecSpeakerModels.push_back(NULL);
         g_vecSpeakerIDs.push_back(spkId);
     }
-    titret = TIT_SPKID_LOAD_MDL_IVEC(g_vecSpeakerModels[spkIdx], fname.c_str());
-    if(titret != StsNoError){
-        SLOGE_FMT("in spkex_addSpk, failed to call TIT_SPKID_LOAD_MDL_IVEC, error: %d.", titret);
-        //TODO rollback.
-    }
+    g_vecSpeakerModels[spkIdx] = spkmdl;
     return true;
 }
 
@@ -272,7 +242,7 @@ bool spkex_rmSpk(unsigned long spkId)
         SpkInfo *&delSpk = g_mapAllSpks[spkId].spk;
         int spkIdx = g_mapAllSpks[spkId].idx;
         set<SpkInfo*> oldSpks = g_mapAllSpks[spkId].oldSpks;
-        if(delSpk->cnter->get() == 0){
+        if(delSpk->add(0) == 0){
             delete delSpk;
         }
         else{
@@ -368,32 +338,32 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
             score = vecScores[idx];
         }
     }
-    if(score >= spkex_ScoreThreshold){
+    if(score > defaultSpkScoreThrd){
         unsigned long spkid = g_vecSpeakerIDs[tIdx];
-        spk = g_mapAllSpks[spkid].spk;
-        spk->cnter->incr();
+        SpkInfo *tmpspk = g_mapAllSpks[spkid].spk;
+        tmpspk->add(1);
+        spk = tmpspk;
     }
     return 1;
 }
 
 void returnSpkInfo(const SpkInfo *spk)
 {
-    bool bdel = false;
+    int retcnt = 1;
     pthread_rwlock_rdlock(&g_SpkInfoRwlock);
     SpkCheckBook & b = g_mapAllSpks[spk->spkId];
     if(b.spk == spk){
-        assert(spk->cnter->decr() >= 0);
+        assert(b.spk->add(-1) >= 0);
     }
     else{
-        assert(b.oldSpks.find(const_cast<SpkInfo*>(spk)) != b.oldSpks.end());
-        if(spk->cnter->get() == 1){
-            bdel = true;
-        }
+        set<SpkInfo*>::iterator spkit = b.oldSpks.find(const_cast<SpkInfo*>(spk));
+        assert(spkit != b.oldSpks.end());
+        retcnt = (*spkit)->add(-1);
+        assert(retcnt >=0);
     }
     pthread_rwlock_unlock(&g_SpkInfoRwlock);
-    if(bdel){
+    if(retcnt == 0){
         pthread_rwlock_wrlock(&g_SpkInfoRwlock);
-        assert(spk->cnter->decr() == 0);
         SpkCheckBook &c = g_mapAllSpks[spk->spkId];
         assert(c.oldSpks.erase(const_cast<SpkInfo*>(spk)) == 1);
         if(c.oldSpks.size() == 0 && c.spk == NULL){

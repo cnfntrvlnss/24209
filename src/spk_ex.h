@@ -8,38 +8,41 @@
 #ifndef SPK__EX_H
 #define SPK__EX_H
 
+#include <pthread.h>
 #include <vector>
 #include <string>
 #include <typeinfo>
-
-struct RefCounter{
-    static RefCounter* getInstance();
-    virtual void incr() =0;
-    virtual int decr() =0;
-    virtual int get() = 0;
-    virtual ~RefCounter(){}
-};
 
 class SpkInfo{
 public:
     explicit SpkInfo(unsigned long param = 0):
         spkId(param)
     {
-        cnter = RefCounter::getInstance();
+        refcnt = 0;
+        pthread_mutex_init(&lock, NULL);
     }
     explicit SpkInfo(const char* param)
     {
         fromStr(param);
-        cnter = RefCounter::getInstance();
+        refcnt = 0;
     }
     virtual ~SpkInfo(){
-        delete cnter;
+        pthread_mutex_destroy(&lock);
     }
     virtual std::string toStr() const;
     virtual bool fromStr(const char* );
+
+    int add(int step){
+        pthread_mutex_lock(&lock);
+        refcnt += step;
+        int ret = refcnt;
+        pthread_mutex_unlock(&lock);
+        return ret;
+    }
 public:
     unsigned long spkId;
-    RefCounter *cnter;
+    pthread_mutex_t lock;
+    int refcnt;
 private:
     SpkInfo(const SpkInfo&);
     SpkInfo& operator=(const SpkInfo&);
@@ -56,5 +59,6 @@ bool spkex_init(const char* cfgfile);
 void spkex_rlse();
 int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &score);
 void returnSpkInfo(const SpkInfo *spk);
+void setDefSpkThrd(float score);
 
 #endif

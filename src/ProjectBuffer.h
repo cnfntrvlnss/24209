@@ -31,9 +31,15 @@ class ProjectBuffer{
 public:
     ProjectBuffer(){
         init();
+        for(unsigned idx=0; idx < allMarksCapa; idx++){
+            allMarks[idx] = NULL;
+        }
     }
     explicit ProjectBuffer(unsigned long pid, time_t curTime = 0, bool bbamp = false){
         init();
+        for(unsigned idx=0; idx < allMarksCapa; idx++){
+            allMarks[idx] = NULL;
+        }
         setPid(pid, curTime, bbamp);
     }
     ~ProjectBuffer(){
@@ -106,6 +112,18 @@ public:
         getDataSegmentIn(idx, offset, endIdx, endOffset, data);
     }
 
+    int subscribeReflesh();
+    void unsubscribeReflesh(int hdl);
+    bool checkReflesh(int hdl){
+        DataRefleshMark* curptr = allMarks[hdl];
+        pthread_mutex_lock(&curptr->lock);
+        bool ret = curptr->bReflesh;
+        if(ret){
+            curptr->bReflesh = false;
+        }
+        pthread_mutex_unlock(&curptr->lock);
+    }
+
     struct BufferConfig{
         BufferConfig():
             waitSecondsStep(30), waitSeconds(UINT_MAX), waitLength(UINT_MAX)
@@ -127,7 +145,7 @@ private:
         fullRecord = lastRecord;
     }
     void getDataSegmentIn(unsigned idx0, unsigned offset0, unsigned idx1, unsigned offset1, std::vector<DataBlock>& data);
-
+    void setReflesh_un();
     struct ArrivalRecord{
         ArrivalRecord():
             seconds(0), unitIdx(0), offset(0)
@@ -159,6 +177,22 @@ private:
     struct timeval mainRegEdTime;
     static unsigned ceilUnitIdx;
     static unsigned ceilOffset;
+
+    struct DataRefleshMark{
+        DataRefleshMark(){
+            bReflesh = true;
+            pthread_mutex_init(&lock, NULL);
+        }
+        ~DataRefleshMark(){
+            pthread_mutex_destroy(&lock);
+        }
+
+        bool bReflesh;
+        pthread_mutex_t lock;
+    };
+    static const unsigned allMarksCapa = 4;
+    DataRefleshMark *allMarks[allMarksCapa];
+    std::set<int> validMarkIdc;
 };
 
 struct BufferConfig: public ProjectBuffer::BufferConfig
