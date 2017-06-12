@@ -16,7 +16,11 @@
 //#include "../dllSRVADCluster.h"
 //#include "../MusicDetect_dup.h"
 #include "../utilites.h"
+#ifdef TEST_SPKEX
 #include "../spk_ex.h"
+#else
+#include "../interface.h"
+#endif
 
 using namespace std;
 
@@ -31,6 +35,7 @@ bool g_bDebugMode = false;
 #define DEBUG_LOG(FMT, ...) if(g_bDebugMode) fprintf(stderr, FMT "\n", ##__VA_ARGS__);
 #define ERROR_LOG(FMT, ...) fprintf(stderr, "ERROR " FMT "\n", ##__VA_ARGS__);
 
+#ifdef TEST_SPKEX
 class SpkInfoEx: public SpkInfo
 {
     static unsigned long acculCnt;
@@ -60,6 +65,7 @@ public:
     unsigned mdLen;
 };
 unsigned long SpkInfoEx::acculCnt = 0;
+#endif
 
 bool loadBinary2Buf(const char* path, char *pData, unsigned &iolen)
 {
@@ -101,6 +107,7 @@ bool loadBinaryFile(const char* path, char *&mdData, unsigned &mdLen)
     return true;
 }
 
+#ifdef TEST_SPKEX
 vector<SpkInfoEx*> getallMdls(const char* listfile)
 {
     vector<SpkInfoEx*> ret;
@@ -114,6 +121,7 @@ vector<SpkInfoEx*> getallMdls(const char* listfile)
     }
     return ret;
 }
+#endif
 
 bool prepareBufAndData(const char* fpath, unsigned &dataLen, char*&pData, char*& addBuf1, char* &addBuf2)
 {
@@ -175,11 +183,54 @@ void parseGlobal(int argc, char *argv[])
 	DEBUG_LOG("cfgFile: %s;\nfromFile: %s;\ntoFile: %s;\ndebugMode: %d", g_szModelListFile, g_szAudioListFile, g_szResultListFile, g_bDebugMode);
 }
 
+#ifndef TEST_SPKEX
+static const void *g_SpkMdls[100];
+static vector<string> g_vecPath;
+void init_and_loadmodel()
+{
+    assert(TIT_SPKID_INIT("ioacas/runSpk.cfg") == StsNoError);
+    g_vecPath = loadFileList(g_szModelListFile);
+    assert(g_vecPath.size() > 0);
+    assert(g_vecPath.size() < 100);
+    for(unsigned idx=0; idx < g_vecPath.size(); idx++){
+        void *tmpptr;
+        assert(TIT_SPKID_LOAD_MDL_IVEC(tmpptr, g_vecPath[idx].c_str()) == StsNoError);
+        g_SpkMdls[idx] = tmpptr;
+    }
+}
+void spk_score(short* data, unsigned len, char *log, unsigned &offset)
+{
+    unsigned spknum = g_vecPath.size();
+    float *scores = new float[100];
+    TITStatus err = TIT_SPKID_VERIFY_CLUSTER(data, len, g_SpkMdls, spknum, scores);
+    assert(err == StsNoError);
+    for(unsigned idx=0; idx < spknum; idx++){
+        offset += sprintf(log+offset, " %0.0f", scores[idx]);
+    }
+    delete [] scores;
+}
+#endif
+
+static bool savebinary(char *mdlData, unsigned mdllen, const char *fname)
+{
+    FILE *fp = fopen(fname, "w");
+    if(fp == NULL){
+        return false;
+    }
+    bool ret = true;
+    if(fwrite(mdlData, 1, mdllen, fp) != mdllen){
+        ret = false;
+    }
+    fclose(fp);
+    return ret;
+}
 
 int main(int argc, char *argv[])
 {
     string sysdir = "ioacas/";
     parseGlobal(argc, argv);
+    //initailize and load models
+    #ifdef TEST_SPKEX
     vector<SpkInfoEx*> vecSpks = getallMdls(g_szModelListFile);
     if(vecSpks.size() == 0){
         ERROR_LOG("no spks being configured!!!");
@@ -188,19 +239,6 @@ int main(int argc, char *argv[])
     else{
         DEBUG_LOG("finish loading spks, count: %lu.", vecSpks.size());
     }
-
-    /*
-    if(!InitVADCluster((sysdir + "VAD_SID.cfg").c_str())){
-        ERROR_LOG("fail to init vad.");
-        exit(1);
-    }
-
-    MscCutHandle hMcut = openMusicCut((sysdir + "Music.cfg").c_str());
-    if(hMcut == NULL){
-        exit(1);
-    }
-    finishOpenMusicCut();
-    */
     if(!spkex_init("ioacas/runSpk.cfg")){
         exit(1);
     }
@@ -210,6 +248,10 @@ int main(int argc, char *argv[])
             exit(1);
         }
     }
+    #else
+    init_and_loadmodel();
+    #endif
+
     
     FILE *resfp = NULL;
     vector<string> vecPcms = loadFileList(g_szAudioListFile);
@@ -235,18 +277,8 @@ int main(int argc, char *argv[])
             short *smpAddBuf1 = reinterpret_cast<short*>(addBuf1);
             short *smpAddBuf2 = reinterpret_cast<short*>(addBuf2);
             uLogLen += snprintf(szLog + uLogLen, 1024, "DataSecs=%u ", smpLen / SC_PCMSMPS);
-            /*
-            unsigned mcutLen = smpLen;
-            if(!cutMusic(hMcut, smpBuf, smpLen, smpAddBuf1, mcutLen)){
-                break;
-            }
-            int vadLen = mcutLen;
-            VADBuffer(true, smpAddBuf1, mcutLen, smpAddBuf2, vadLen);
-            uLogLen += snprintf(szLog + uLogLen, 1024, "MCutLen=%u VadLen=%u ", mcutLen / SC_PCMSMPS, vadLen / SC_PCMSMPS);
-            if(vadLen < VALID_PCMSMPS){
-                break;
-            }
-            */
+
+            #ifdef TEST_SPKEX
             const SpkInfo* tspk;
             float spkScore;
             int retscr = spkex_score(smpBuf, smpLen, tspk, spkScore);
@@ -257,6 +289,16 @@ int main(int argc, char *argv[])
                 uLogLen += snprintf(szLog + uLogLen, 1024, " speaker=%s score=%0.2f ", tspk->toStr().c_str(), spkScore);
                 returnSpkInfo(tspk);
             }
+            #else
+            /*
+            static unsigned curidx = 0;
+            char tmpname[100];
+            sprintf(tmpname, "debug/%d.pcm", curidx);
+            curidx ++;
+            savebinary(reinterpret_cast<char*>(smpBuf), smpLen * 2, tmpname);
+            */
+            spk_score(smpBuf, smpLen, szLog, uLogLen);           
+            #endif
             break;
         }
         DEBUG_LOG("%s", szLog);
@@ -267,7 +309,11 @@ int main(int argc, char *argv[])
     if(resfp) fclose(resfp);
 
 exit_main:
+    #ifdef TEST_SPKEX
     spkex_rlse();
+    #else
+    TIT_SPKID_EXIT();
+    #endif
     /*
     FreeVADCluster();
     closeMusicCut(hMcut);
