@@ -49,8 +49,8 @@ const unsigned short g_uSpkServType = 0x92;
 static pthread_mutex_t g_SpkRepLock = PTHREAD_MUTEX_INITIALIZER;
 static float g_fSpkReportThreshold = 0.0;
 static map<unsigned, float> g_mSpkRepThds;
-static const char* g_SpkRepThdsFile = "ioacas/speakerReport.txt";
-static const char *g_SpkRepNofityFile = "ioacas/speakerReport";
+static const char* g_SpkRepThdsFile = "ioacas/SpeakerReport.txt";
+static const char *g_SpkRepNofityFile = "ioacas/SpeakerReport";
 static float getSpkRepThd(unsigned spkId)
 {
     pthread_mutex_lock(&g_SpkRepLock);
@@ -178,10 +178,10 @@ static void updateSpeakerThresholds()
     while(fgets(tmpline, 100, fp) != NULL){
         unsigned cfgId;
         int score;
-        if(sscanf(tmpline, "%u %d", cfgId, score) < 2) continue;
+        if(sscanf(tmpline, "%u %d", &cfgId, &score) < 2) continue;
         g_mSpkRepThds[cfgId] = score;
     }
-    pthread_mutex_lock(&g_SpkRepLock);
+    pthread_mutex_unlock(&g_SpkRepLock);
     fclose(fp);
 }
 
@@ -559,13 +559,12 @@ void *ioacas_maintain_procedure(void *)
             static time_t lasttime;
             if(cur_time > 3 + lasttime){
                 lasttime = cur_time;
-                if(g_AutoCfg.checkAndLoad()){
-                    if(g_AutoCfg.isUpdated("spk", "reportThreshold")){
-                        float score;
-                        Config_getValue(&g_AutoCfg, "spk", "reportThreshold", score);
-                        setSpkRepThd(score);
-                        LOGFMT_INFO(g_logger, "updateConfig spk.reportThreshold updated to %.2f", score);
-                    }
+                g_AutoCfg.checkAndLoad();
+                if(g_AutoCfg.isUpdated("spk", "reportThreshold")){
+                    float score;
+                    Config_getValue(&g_AutoCfg, "spk", "reportThreshold", score);
+                    setSpkRepThd(score);
+                    LOGFMT_INFO(g_logger, "updateConfig spk.reportThreshold updated to %.2f", score);
                 }
             }
         }

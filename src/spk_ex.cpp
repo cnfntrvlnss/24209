@@ -138,24 +138,70 @@ public:
 };
 */
 
+/**
+ * 若有wrlock 等待，需要rdlock也等待
+ *
+ */
+class SRWLock{
+public:
+    explicit SRWLock(){
+        wcnt = 0;
+        pthread_rwlock_init(&rwlock, NULL);
+        pthread_mutex_init(&lock, NULL);
+        pthread_cond_init(&cond, NULL);
+    }
+    ~SRWLock(){
+        pthread_rwlock_destroy(&rwlock);
+        pthread_mutex_destroy(&lock);
+        pthread_cond_destroy(&cond);
+    }
+    void wlock(){
+        pthread_mutex_lock(&lock);
+        wcnt ++;
+        pthread_mutex_unlock(&lock);
+        pthread_rwlock_wrlock(&rwlock);
+        pthread_mutex_lock(&lock);
+        wcnt --;
+        pthread_mutex_unlock(&lock);
+        pthread_cond_broadcast(&cond);
+    }
+    void unlock(){
+        pthread_rwlock_unlock(&rwlock);
+    }
+    void rlock(){
+        pthread_mutex_lock(&lock);
+        while(wcnt > 0){
+            pthread_cond_wait(&cond, &lock);
+        }
+        pthread_mutex_unlock(&lock);
+        pthread_rwlock_rdlock(&rwlock);
+    }
+
+    pthread_rwlock_t rwlock;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int wcnt;
+};
+
+
+
 class SLockHelper{
 public:
-    SLockHelper(pthread_rwlock_t* param, bool exmark = true):
-        plock(param), bRdlock(exmark)
+    explicit SLockHelper(SRWLock* param, bool exmark = true):
+        plock(param)
     {
-        if(exmark) pthread_rwlock_wrlock(plock);
-        else pthread_rwlock_rdlock(plock);
+        if(exmark) param->wlock();
+        else param->rlock();
     }
 
     ~SLockHelper(){
-        pthread_rwlock_unlock(plock);
+        plock->unlock();
     }
 
 private:
     SLockHelper(const SLockHelper&);
     SLockHelper& operator=(const SLockHelper&);
-    pthread_rwlock_t* plock;
-    bool bRdlock;
+    SRWLock* plock;
 };
 
 struct SpkCheckBook{
@@ -172,17 +218,18 @@ static vector<void*> g_vecSpeakerModels;
 static vector<unsigned long> g_vecSpeakerIDs;
 static map<unsigned long, SpkCheckBook > g_mapAllSpks;
 //static float spkex_ScoreThreshold = 0.0001;
-static pthread_rwlock_t g_SpkInfoRwlock = PTHREAD_RWLOCK_INITIALIZER;
+//static pthread_rwlock_t g_SpkInfoRwlock = PTHREAD_RWLOCK_INITIALIZER;
+static SRWLock g_SpkSLock;
 
 void setDefSpkThrd(float score)
 {
-    SLockHelper lock(&g_SpkInfoRwlock);
+    SLockHelper lock(&g_SpkSLock);
     defaultSpkScoreThrd = score;
 }
 
 void spkex_getAllSpks(vector<const SpkInfo*> &outSpks)
 {
-    SLockHelper mylock(&g_SpkInfoRwlock, false);
+    SLockHelper mylock(&g_SpkSLock, false);
     outSpks.clear();
     for(unsigned idx=0; idx < g_vecSpeakerIDs.size(); idx++){
         outSpks.push_back(g_mapAllSpks[g_vecSpeakerIDs[idx]].spk);
@@ -191,7 +238,6 @@ void spkex_getAllSpks(vector<const SpkInfo*> &outSpks)
 
 bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
 {
-    SLockHelper mylock(&g_SpkInfoRwlock);
     string fname = "ioacas/SpkModel/";
     fname += spk->toStr();
     TITStatus titret = TIT_SPKID_SAVE_MDL_IVEC(mdlData, fname.c_str());
@@ -207,37 +253,40 @@ bool spkex_addSpk(SpkInfo* spk, char* mdlData, unsigned mdlLen)
         return false;
     }
 
-    const unsigned long &spkId = spk->spkId;
-    int spkIdx = -1;
-    if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end()){
-        SpkInfo *oldSpk = g_mapAllSpks[spkId].spk;
-        if(oldSpk != NULL){
-            spkIdx = g_mapAllSpks[spkId].idx;
-            TIT_SPKID_DEL_MDL(g_vecSpeakerModels[spkIdx]);
-            if(oldSpk != spk){
-                if(oldSpk->add(0) > 0){
-                    g_mapAllSpks[spkId].oldSpks.insert(oldSpk);   
+    {
+        SLockHelper mylock(&g_SpkSLock);
+        const unsigned long &spkId = spk->spkId;
+        int spkIdx = -1;
+        if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end()){
+            SpkInfo *oldSpk = g_mapAllSpks[spkId].spk;
+            if(oldSpk != NULL){
+                spkIdx = g_mapAllSpks[spkId].idx;
+                TIT_SPKID_DEL_MDL(g_vecSpeakerModels[spkIdx]);
+                if(oldSpk != spk){
+                    if(oldSpk->add(0) > 0){
+                        g_mapAllSpks[spkId].oldSpks.insert(oldSpk);   
+                    }
+                    else{
+                        delete oldSpk;
+                    }
+                    g_mapAllSpks[spkId].spk = spk;
                 }
-                else{
-                    delete oldSpk;
-                }
-                g_mapAllSpks[spkId].spk = spk;
             }
         }
+        else{
+            spkIdx = g_vecSpeakerModels.size();
+            g_mapAllSpks.insert(make_pair(spkId, SpkCheckBook(spk, spkIdx)));
+            g_vecSpeakerModels.push_back(NULL);
+            g_vecSpeakerIDs.push_back(spkId);
+        }
+        g_vecSpeakerModels[spkIdx] = spkmdl;
     }
-    else{
-        spkIdx = g_vecSpeakerModels.size();
-        g_mapAllSpks.insert(make_pair(spkId, SpkCheckBook(spk, spkIdx)));
-        g_vecSpeakerModels.push_back(NULL);
-        g_vecSpeakerIDs.push_back(spkId);
-    }
-    g_vecSpeakerModels[spkIdx] = spkmdl;
     return true;
 }
 
 bool spkex_rmSpk(unsigned long spkId)
 {
-    SLockHelper mylock(&g_SpkInfoRwlock);
+    SLockHelper mylock(&g_SpkSLock);
     if(g_mapAllSpks.find(spkId) != g_mapAllSpks.end() && g_mapAllSpks[spkId].spk != NULL){
         SpkInfo *&delSpk = g_mapAllSpks[spkId].spk;
         int spkIdx = g_mapAllSpks[spkId].idx;
@@ -273,7 +322,7 @@ bool spkex_rmSpk(unsigned long spkId)
 
 unsigned spkex_getAllSpks(std::vector<unsigned long> &spkIds)
 {
-    SLockHelper mylock(&g_SpkInfoRwlock, false);
+    SLockHelper mylock(&g_SpkSLock, false);
     spkIds.clear();
     spkIds.insert(spkIds.begin(), g_vecSpeakerIDs.begin(), g_vecSpeakerIDs.end());
     return g_vecSpeakerIDs.size();
@@ -285,7 +334,7 @@ unsigned spkex_getAllSpks(std::vector<unsigned long> &spkIds)
 bool spkex_init(const char* cfgfile)
 {
     openspkeng();
-    SLockHelper mylock(&g_SpkInfoRwlock);
+    //SLockHelper mylock(&g_SpkInfoRwlock);
     TITStatus err = TIT_SPKID_INIT(cfgfile);
     if(err != StsNoError){
         SLOGE_FMT("in intSpkRec, fail to initialize spk engine. error: %d; file: %s.", err, cfgfile);
@@ -314,7 +363,7 @@ void spkex_rlse()
  */
 int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &score)
 {
-    SLockHelper mylock(&g_SpkInfoRwlock, false);
+    SLockHelper mylock(&g_SpkSLock, false);
     spk = NULL;
     score = -1000.0;
     if(g_vecSpeakerModels.size() == 0){
@@ -350,25 +399,25 @@ int spkex_score(short* pcmData, unsigned smpNum, const SpkInfo* &spk, float &sco
 void returnSpkInfo(const SpkInfo *spk)
 {
     int retcnt = 1;
-    pthread_rwlock_rdlock(&g_SpkInfoRwlock);
-    SpkCheckBook & b = g_mapAllSpks[spk->spkId];
-    if(b.spk == spk){
-        assert(b.spk->add(-1) >= 0);
+    {
+        SLockHelper mylock(&g_SpkSLock, false);
+        SpkCheckBook & b = g_mapAllSpks[spk->spkId];
+        if(b.spk == spk){
+            assert(b.spk->add(-1) >= 0);
+        }
+        else{
+            set<SpkInfo*>::iterator spkit = b.oldSpks.find(const_cast<SpkInfo*>(spk));
+            assert(spkit != b.oldSpks.end());
+            retcnt = (*spkit)->add(-1);
+            assert(retcnt >=0);
+        }
     }
-    else{
-        set<SpkInfo*>::iterator spkit = b.oldSpks.find(const_cast<SpkInfo*>(spk));
-        assert(spkit != b.oldSpks.end());
-        retcnt = (*spkit)->add(-1);
-        assert(retcnt >=0);
-    }
-    pthread_rwlock_unlock(&g_SpkInfoRwlock);
     if(retcnt == 0){
-        pthread_rwlock_wrlock(&g_SpkInfoRwlock);
+        SLockHelper mylock(&g_SpkSLock);
         SpkCheckBook &c = g_mapAllSpks[spk->spkId];
         assert(c.oldSpks.erase(const_cast<SpkInfo*>(spk)) == 1);
         if(c.oldSpks.size() == 0 && c.spk == NULL){
             g_mapAllSpks.erase(spk->spkId);
         }
-        pthread_rwlock_unlock(&g_SpkInfoRwlock);
     }
 }
