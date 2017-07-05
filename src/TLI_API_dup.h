@@ -9,7 +9,7 @@
 #define TLI__API__DUP_H
 
 
-void initLID(unsigned thrdNum);
+bool initLID(unsigned thrdNum);
 int openTLI_dup();
 void closeTLI_dup(int hdl);
 

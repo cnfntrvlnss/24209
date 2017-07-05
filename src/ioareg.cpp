@@ -270,9 +270,8 @@ void ioareg_maintain_procedure(time_t curTime)
     static time_t lasttime;
     if(curTime > 3 + lasttime){
         lasttime = curTime;
-        if(g_AutoCfg.checkAndLoad()){
-            ioareg_updateConfig();
-        }
+		g_AutoCfg.checkAndLoad();
+        ioareg_updateConfig();
     }
     static time_t statuslasttime;
     if(curTime > 30 + statuslasttime){
@@ -393,7 +392,10 @@ bool ioareg_init()
         }
     }
 
-    initLID(g_ThreadNum);
+    if(!initLID(g_ThreadNum)){
+		LOG_ERROR(g_logger, "failed to initailize lid engine.");
+		return false;
+	}
     //g_pthread_id = (pthread_t *)malloc(sizeof(pthread_t) * (g_ThreadNum));
 
     g_RecSpaceArr = new RecogThreadSpace[g_ThreadNum];

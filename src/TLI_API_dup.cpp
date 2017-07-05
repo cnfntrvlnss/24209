@@ -57,7 +57,7 @@ static TLI_GetResult_P TLI_GetResult;
 #define GETSMPOL(x, y) \
         x = (x##_P)dlsym(g_LidHdl, y);\
         do{\
-           if(x == NULL){fprintf(stderr, "ERROR %s", dlerror()); exit(1);} \
+           if(x == NULL){fprintf(stderr, "ERROR %s", dlerror()); } \
         } while(0)
 
 
@@ -67,7 +67,6 @@ void openlideng()
     g_LidHdl = dlopen(lidfile, RTLD_LAZY);
     if(g_LidHdl == NULL){
         fprintf(stderr, "ERROR %s", dlerror());
-        exit(1);
     }
     GETSMPOL(TLI_Init, "_Z8TLI_InitPcPiPS_ii");
     GETSMPOL(TLI_Exit, "_Z8TLI_Exitv");
@@ -80,24 +79,26 @@ void openlideng()
 #endif
 
 #define MAX_PATH 512
-static void initTLI();
+static bool initTLI();
 static void rlseTLI();
 class LIDSpace4TLI{
     static LIDSpace4TLI* onlyone;
     static pthread_mutex_t onlyoneLock;
 
     LIDSpace4TLI(){
-        initTLI();
+        bInit = initTLI();
     }
     ~LIDSpace4TLI(){
         rlseTLI();
     }
-    friend void initLID(unsigned thrdNum);
+    friend bool initLID(unsigned thrdNum);
+	bool bInit;
 };
 
 unsigned g_nThreadNum = 8;
-void initLID(unsigned thrdNum)
+bool initLID(unsigned thrdNum)
 {
+	bool ret = false;
     pthread_mutex_lock(&LIDSpace4TLI::onlyoneLock);
     if(LIDSpace4TLI::onlyone == NULL){
         if(thrdNum != 0)g_nThreadNum = thrdNum;
@@ -106,7 +107,9 @@ void initLID(unsigned thrdNum)
             fprintf(stderr, "ERROR in LIDSpace4TLI::initLID, failed to create new instance of LIDSpace4TLI.\n");
         }
     }
+	ret = LIDSpace4TLI::onlyone->bInit;
     pthread_mutex_unlock(&LIDSpace4TLI::onlyoneLock);
+	return ret;
 }
 
 LIDSpace4TLI* LIDSpace4TLI::onlyone = NULL;
@@ -130,7 +133,7 @@ unsigned countLinesInFile(const char *file)
     FILE *fp = fopen(file, "r");
     if(fp == NULL){
         fprintf(stderr, "cannot open file %s.\n", file);
-        exit(1);
+		return 0;
     }
     char szTemp[MAXLINE_LEN];
     while(!feof(fp)){
@@ -144,9 +147,11 @@ unsigned countLinesInFile(const char *file)
     }
     return cnt;
 }
-void initTLI()
+bool initTLI()
 {
+	bool ret = false;
     g_nTemplateNum = countLinesInFile("ioacas/sysdir/param.txt");
+	if(g_nTemplateNum == 0) return ret;
     for(int idx=0; idx < g_nTemplateNum; idx ++){
         g_pnAllTemplateIDs[idx] = idx;
         char *curname = new char[10];
@@ -155,6 +160,7 @@ void initTLI()
     }
     
     openlideng();
+	if(!TLI_Init) return ret;
     int tliret = TLI_Init(g_SysDirPath, g_pnAllTemplateIDs, g_pszAllTemplateNames, g_nTemplateNum, g_nThreadNum);
     if(tliret != 0){
         if(tliret == -1){
@@ -172,19 +178,21 @@ void initTLI()
         else{
             fprintf(stderr, "ERROR other error in tli_init.\n");
         }
-        exit(1);
     }
+	else{ ret = true; }
+	return ret;
 }
 
 void rlseTLI()
 {
-    TLI_Exit();  
+	if(TLI_Exit) TLI_Exit();  
 }
 
 int openTLI_dup()
 {
     initLID(0);
     TLI_HANDLE hret = -1;
+	if(TLI_Open == NULL) return hret;
     int err = TLI_Open(hret);
     if(hret < 0){
         fprintf(stderr, "ERROR in openTLI_dup, fail to call TLI_Open_1. error: %d.\n", err);
@@ -195,7 +203,7 @@ int openTLI_dup()
 
 void closeTLI_dup(int hdl)
 {
-    TLI_Close(hdl);
+	if(TLI_Close) TLI_Close(hdl);
 }
 
 void scoreTLI_dup(int hdl, short *pcmData, int pcmLen, int &resID, float &resScore)

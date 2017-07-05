@@ -173,13 +173,18 @@ static void updateSpeakerThresholds()
     }
     LOGFMT_INFO(g_logger, "updateSpeakerThresholds begin loading file %s.", g_SpkRepThdsFile);
     pthread_mutex_lock(&g_SpkRepLock);
-    g_mSpkRepThds.clear();
+    //g_mSpkRepThds.clear();
     char tmpline[100];
     while(fgets(tmpline, 100, fp) != NULL){
         unsigned cfgId;
         int score;
         if(sscanf(tmpline, "%u %d", &cfgId, &score) < 2) continue;
-        g_mSpkRepThds[cfgId] = score;
+		if(g_mSpkRepThds.find(cfgId) == g_mSpkRepThds.end()) g_mSpkRepThds[cfgId] = g_fSpkReportThreshold;
+		int curscore = g_mSpkRepThds[cfgId];
+        if(curscore != score){
+			LOGFMT_INFO(g_logger, "updateSpeakerThresholds update %u from %d to %d", cfgId, curscore, score);
+		    g_mSpkRepThds[cfgId] = score;
+		}
     }
     pthread_mutex_unlock(&g_SpkRepLock);
     fclose(fp);
@@ -343,6 +348,7 @@ int InitDLL(int iPriority,
 		pthread_attr_destroy(&threadAttr);
     }
 
+	LOG_INFO(g_logger, "======================ioacas module initialize success=========================");
     g_bInitialized = true;
     return 0;
 }
@@ -427,6 +433,8 @@ int AddCfgByBuf(const char *pData,
             delete curspk;
             return 0;
         }
+		LOGFMT_INFO(g_logger, "add one speaker success, id: %u", id);
+
         return 1;
     }
     return 0;
@@ -559,12 +567,13 @@ void *ioacas_maintain_procedure(void *)
             static time_t lasttime;
             if(cur_time > 3 + lasttime){
                 lasttime = cur_time;
-                g_AutoCfg.checkAndLoad();
-                if(g_AutoCfg.isUpdated("spk", "reportThreshold")){
-                    float score;
-                    Config_getValue(&g_AutoCfg, "spk", "reportThreshold", score);
-                    setSpkRepThd(score);
-                    LOGFMT_INFO(g_logger, "updateConfig spk.reportThreshold updated to %.2f", score);
+                if(g_AutoCfg.checkAndLoad()){
+                    if(g_AutoCfg.isUpdated("spk", "reportThreshold")){
+                        float score;
+                        Config_getValue(&g_AutoCfg, "spk", "reportThreshold", score);
+                        setSpkRepThd(score);
+                        LOGFMT_INFO(g_logger, "updateConfig spk.reportThreshold updated to %.2f", score);
+                    }
                 }
             }
         }
