@@ -21,7 +21,7 @@ CNAMES:=
 PROGNAME=libIOACAS.so
 LDLIBS +=-L${TESTDIR} -ldl -lTLI_API -lNewVAD -lMusicDetect -ldllSRVADCluster -lSpeakerRecogAPI -Wl,-rpath-link=${TESTDIR}
 LDFLAGS += -lpthread -shared
-CFLAGS +=
+CFLAGS += -Wsign-compare
 ifneq (${CONF},Debug)
 CFLAGS+= -O2 -Wall -fPIC
 else
