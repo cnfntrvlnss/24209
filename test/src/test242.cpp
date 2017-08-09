@@ -422,11 +422,11 @@ void saveLeftItems()
     g_mId2Infos.clear();
     pthread_mutex_unlock(&g_ProjIdsLock);
 }
-void interactWithMe()
+void interactWithMe(int secs=3)
 {
-    fprintf(stdout," before starting this round, please strike key s to stop, or continue after 3 secs:");
+    fprintf(stdout, "before starting this round, please strike key s to stop, or continue after %d secs:", secs);
     char tmpstr[256];
-    char *retfgets = fgetstimeout(tmpstr, 256, 3);
+    char *retfgets = fgetstimeout(tmpstr, 256, secs);
     if(retfgets != NULL && tmpstr[0] == 's'){
         fprintf(stdout, "you have stopped me, press c to restart:");
         while(1){
@@ -604,6 +604,7 @@ int main(int argc, char* argv[])
         select(0, NULL, NULL, NULL, &tv);
     }
 	cout<< ">>>>>>>>>>>>>finish test<<<<<<<<<<<<<<<\n";
+    interactWithMe(1000);
     funcRemoveAllCfg(servType4Model);
     funcCloseDll();
     relsIoacas();

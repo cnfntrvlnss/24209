@@ -63,6 +63,14 @@ static inline DataBlock BlockMana_alloc()
     }
 }
 
+static inline bool BlockMana_feed(DataBlock &blk)
+{
+    size_t allcnt = g_liFreeBlocks.size() + g_liUsedBlocks.size();
+    if(allcnt > g_uBlocksMax) return false;
+    g_liUsedBlocks.insert(blk);
+    return true;
+}
+
 static inline void BlockMana_relse(const DataBlock& blk)
 {
     //AutoLock lock(g_BlockManaLocker);
@@ -215,6 +223,24 @@ void ProjectBuffer::relse(vector<DataBlock>& retArr){
     arrUnits.resize(1);
     LOGFMT_INFO(g_BufferLogger, "PID=%lu SIZE=%lu release ProjectBuffer. %s", this->ID, tolLen, szAddInfo);
     LOGFMT_DEBUG(g_BufferLogger, "PID=%lu MainReg start %ld %ld; end: %ld %ld.", this->ID, mainRegStTime.tv_sec, mainRegStTime.tv_usec, mainRegEdTime.tv_sec, mainRegEdTime.tv_usec);
+}
+
+void ProjectBuffer::recvData(DataBlock& blk)
+{
+    AutoLock lock(m_BufferLock);
+    arrUnits.push_back(blk);
+    time_t curTime;
+    time(&curTime);
+    lastRecord.seconds = curTime;
+    lastRecord.unitIdx = arrUnits.size() - 1;
+    lastRecord.offset = arrUnits.back().len;
+    if(!bFull){
+        if(arrUnits.size() - 1 > ceilUnitIdx || (arrUnits.size() -1 == ceilUnitIdx && arrUnits.back().len >= ceilOffset)){
+            LOGFMT_DEBUG(g_BufferLogger, "PID=%lu the state turns to FULL, as the accumulated data reaches to maximum.", this->ID);
+            turnFull();
+        }
+    }
+    setReflesh_un();
 }
 
 /**
@@ -435,6 +461,48 @@ void notifyProjFinish(unsigned long pid)
     LOGFMT_DEBUG(g_BufferLogger, "notifyProjFinish PID=%lu.", pid);
 }
 
+void recvProjSegment(unsigned long pid, DataBlock &blk, bool iswait)
+{
+    ProjectBuffer *tmpPrj = NULL;
+    g_ProjsLocker.lock();
+    if(g_mapProjs.find(pid) == g_mapProjs.end()){
+        time_t curTime;
+        time(&curTime);
+        ProjectBuffer *tmpPrj = new ProjectBuffer(pid, curTime, g_PushProjAddr != NULL);
+        g_mapProjs[pid].prj = tmpPrj;
+        if(g_PushProjAddr != NULL){
+            int refnum = g_PushProjAddr(tmpPrj);
+            if(refnum > 0) g_mapProjs[pid].cnt += refnum;
+        }
+        //add to setPrevFullIDs.
+        g_PrevFullIDsLocker.lock();
+        g_mapPrevFullIDs.insert(std::make_pair(pid, ProjectFullInfo(tmpPrj, curTime)));
+        g_PrevFullIDsLocker.unLock();
+        g_mapProjs[pid].cnt ++;
+        LOGFMT_DEBUG(g_BufferLogger, "PID=%lu arrives, %u projects in buffer.", pid, g_mapProjs.size());
+    }
+    tmpPrj = g_mapProjs[pid].prj;
+    g_mapProjs[pid].cnt ++;
+    assert(g_mapProjs[pid].leftSize == 0);
+
+    bool bSucc = true;
+    while(!BlockMana_feed(blk)){
+        if(!iswait){
+            LOGFMT_ERROR(g_BufferLogger, "PID=%lu GlobalBuffer failed to receive data, as DataBlock pool is full.", pid);
+            bSucc = false;
+            break;
+        }
+        else{
+            g_ProjsLocker.lock();
+            g_ProjsLocker.unLock();
+        }
+    }
+    g_ProjsLocker.unLock();
+
+    if(bSucc) tmpPrj->recvData(blk);
+    returnBuffer(tmpPrj);
+}
+
 /**
  *
  */
@@ -492,15 +560,9 @@ void recvProjSegment(ProjectSegment param, bool iswait)
     }
     g_ProjsLocker.unLock();
 
-    if(bvalidblk)
-        unsigned rlen = tmpPrj->recvData(data, dataLen, &blk);
-    /*
-       if(rlen == dataLen){
-       } 
-       else{
-       LOGFMT_ERROR(g_BufferLogger, "PID=%lu GlobalBuffer receive data failed. Total: %u; Received: %u.", pid, dataLen, rlen);
-       }
-       */
+    if(bvalidblk){
+        tmpPrj->recvData(data, dataLen, &blk);
+    }
     returnBuffer(tmpPrj);
 }
 
@@ -515,22 +577,6 @@ void obtainAllBuffers(map<unsigned long, ProjectBuffer*>& allBufs)
     }
     g_ProjsLocker.unLock();
 }
-
-/*
- * TODO reimpliment it, add refcnt only under context of valid projIndex.
- ProjectBuffer* obtainBuffer(unsigned long pid)
- {
- g_ProjsLocker.lock();
- if(g_mapProjs.find(pid) == g_mapProjs.end()){
- g_ProjsLocker.unLock();
- return NULL;
- }
- ProjectBuffer* ret = g_mapProjs[pid].prj;
- g_mapProjs[pid].cnt ++;
- g_ProjsLocker.unLock();
- return ret;
- }
- */
 
 /**
  * from setPrevFullIds to liFullIds.

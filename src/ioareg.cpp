@@ -552,13 +552,13 @@ static void lidRegProcess(RecogThreadSpace &rec, int hTLI)
     char* &pData = rec.projData.m_pData;
     unsigned &dataLen = rec.projData.m_iDataLen;
     unsigned long &pid = rec.projData.m_iPCBID;
-	unsigned logLen = 0;
-	char WriteLog[1024];
+    unsigned logLen = 0;
+    char WriteLog[1024];
     logLen = 0;
     logLen += sprintf(WriteLog+logLen, "LIDREG PID=%lu WavLen=%us ", pid, dataLen / PCM_ONESEC_LEN);
     //clockoutput_start("LIDREG TIME CONSUMING ");
     clockoutput_start("CLOCK_RECORD %s", WriteLog);
-string timelid;
+    string timelid;
     while(true){
         short *recBuf = reinterpret_cast<short*>(pData);
         unsigned recBufLen = dataLen / sizeof(short);
@@ -570,75 +570,76 @@ string timelid;
             break;
         }
         /*
-        if(hMCut != NULL){
-            set_count();
-            bool retm = cutMusic(hMCut, recBuf, recBufLen, rec.mcutBuf, rec.mcutBufLen);
-            if(retm){
-            }
-            else{
-                rec.mcutBufLen = 0;
-            }
-            logLen += sprintf(WriteLog + logLen, "MusicCutLen=%ds ", rec.mcutBufLen / PCM_ONESEC_SMPS);
-            int  mscRatio = (1 - (float)rec.mcutBufLen / recBufLen) * 100; 
-            pthread_mutex_lock(&g_MusicPrecentLock);
-            int imprecent = g_iMusicPrecent;
-            pthread_mutex_unlock(&g_MusicPrecentLock);
-            if(imprecent < mscRatio){
-                rec.result.m_iTargetID = g_uMusicID;
-                rec.result.m_iAlarmType = g_uMusicType;
-                rec.result.m_iHarmLevel = 0;
-                rec.result.m_fLikely = mscRatio;
-                rec.result.m_fSegLikely[0] = mscRatio;
-                reportIoacasResult(rec.result, WriteLog, logLen);
-            }
-            recBuf = rec.mcutBuf;
-            recBufLen = rec.mcutBufLen;
-        }
+           if(hMCut != NULL){
+           set_count();
+           bool retm = cutMusic(hMCut, recBuf, recBufLen, rec.mcutBuf, rec.mcutBufLen);
+           if(retm){
+           }
+           else{
+           rec.mcutBufLen = 0;
+           }
+           logLen += sprintf(WriteLog + logLen, "MusicCutLen=%ds ", rec.mcutBufLen / PCM_ONESEC_SMPS);
+           int  mscRatio = (1 - (float)rec.mcutBufLen / recBufLen) * 100; 
+           pthread_mutex_lock(&g_MusicPrecentLock);
+           int imprecent = g_iMusicPrecent;
+           pthread_mutex_unlock(&g_MusicPrecentLock);
+           if(imprecent < mscRatio){
+           rec.result.m_iTargetID = g_uMusicID;
+           rec.result.m_iAlarmType = g_uMusicType;
+           rec.result.m_iHarmLevel = 0;
+           rec.result.m_fLikely = mscRatio;
+           rec.result.m_fSegLikely[0] = mscRatio;
+           reportIoacasResult(rec.result, WriteLog, logLen);
+           }
+           recBuf = rec.mcutBuf;
+           recBufLen = rec.mcutBufLen;
+           }
 
-        if(recBufLen < POSITIVE_PCM_LEN)
-        {
-            sprintf(WriteLog+strlen(WriteLog), "too short ");
-            rec.vadBufLen = 0;
-            break;
-        }
+           if(recBufLen < POSITIVE_PCM_LEN)
+           {
+           sprintf(WriteLog+strlen(WriteLog), "too short ");
+           rec.vadBufLen = 0;
+           break;
+           }
 
-        if(hVAD != -1){
-            set_count();
-            bool retv = cutVAD(hVAD, recBuf, recBufLen, rec.vadBuf, rec.vadBufLen);
-            if(retv){
-            }
-            else{
-                rec.vadBufLen = 0;   
-            }
-            logLen += sprintf(WriteLog + logLen, "VADCutLen=%ds ", rec.vadBufLen / PCM_ONESEC_SMPS);
-            int vadRatio = (1 - (float)rec.vadBufLen / recBufLen) * 100;
-            pthread_mutex_lock(&g_VADPrecentLock);
-            int ivprecent = g_iVADPrecent;
-            pthread_mutex_unlock(&g_VADPrecentLock);
-            if(vadRatio > ivprecent){
-                rec.result.m_iTargetID = g_uVADID;
-                rec.result.m_iAlarmType = g_uVADType;
-                rec.result.m_iHarmLevel = 0;
-                rec.result.m_fLikely = vadRatio;
-                rec.result.m_fSegLikely[0] = vadRatio;
-                reportIoacasResult(rec.result, WriteLog, logLen);
-            }
-            recBuf = rec.vadBuf;
-            recBufLen = rec.vadBufLen;
-        }
+           if(hVAD != -1){
+           set_count();
+           bool retv = cutVAD(hVAD, recBuf, recBufLen, rec.vadBuf, rec.vadBufLen);
+           if(retv){
+           }
+           else{
+           rec.vadBufLen = 0;   
+           }
+           logLen += sprintf(WriteLog + logLen, "VADCutLen=%ds ", rec.vadBufLen / PCM_ONESEC_SMPS);
+           int vadRatio = (1 - (float)rec.vadBufLen / recBufLen) * 100;
+           pthread_mutex_lock(&g_VADPrecentLock);
+           int ivprecent = g_iVADPrecent;
+           pthread_mutex_unlock(&g_VADPrecentLock);
+           if(vadRatio > ivprecent){
+           rec.result.m_iTargetID = g_uVADID;
+           rec.result.m_iAlarmType = g_uVADType;
+           rec.result.m_iHarmLevel = 0;
+           rec.result.m_fLikely = vadRatio;
+           rec.result.m_fSegLikely[0] = vadRatio;
+           reportIoacasResult(rec.result, WriteLog, logLen);
+           }
+           recBuf = rec.vadBuf;
+           recBufLen = rec.vadBufLen;
+           }
 
-        if(recBufLen < POSITIVE_PCM_LEN)
-        {
-            sprintf(WriteLog+strlen(WriteLog), "too short ");
-            break;
-        }
-        */
+           if(recBufLen < POSITIVE_PCM_LEN)
+           {
+           sprintf(WriteLog+strlen(WriteLog), "too short ");
+           break;
+           }
+           */
         int nMax;
         float score;
         LOG_TRACE(g_logger, "LIDREG before scoreTLI, save raw pcm in "<< saveTempBinaryData(rec.curTime, pid, reinterpret_cast<char*>(recBuf), recBufLen * sizeof(short)));
-clockoutput_start("ScoreLID RecLen %u", recBufLen);
+        clockoutput_start("ScoreLID RecLen %u", recBufLen);
         scoreTLI_dup(hTLI, recBuf, recBufLen, nMax, score);
-timelid = clockoutput_end();
+        timelid = clockoutput_end();
+        logLen += sprintf(WriteLog+logLen, "EngineScore %d %0.2f ", nMax, score);
         if(checkAndSetLidResSt(rec.result, nMax, score)){
             reportIoacasResult(rec.result, WriteLog, logLen);
         }

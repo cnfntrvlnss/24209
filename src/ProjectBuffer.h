@@ -93,6 +93,7 @@ public:
         return bFull;
     }
 
+    void recvData(DataBlock& blk);
     unsigned recvData(char *data, unsigned len, DataBlock* blk, time_t curTime = 0);
     void finishRecv();
     void init(){
@@ -219,6 +220,8 @@ void getBufferStatus(std::string &outstr);
 bool init_bufferglobal(BufferConfig buffConfig, FuncPushProj pushProjAddr = NULL);
 void rlse_bufferglobal();
 extern "C" void notifyProjFinish(unsigned long pid);
+
+void recvProjSegment(unsigned long pid, DataBlock &blk, bool iswait);
 void recvProjSegment(ProjectSegment param, bool iswait = false);
 ProjectBuffer* obtainBuffer(unsigned long pid);
 void obtainAllBuffers(std::map<unsigned long, ProjectBuffer*>& allBufs);

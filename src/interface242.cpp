@@ -310,6 +310,10 @@ static void initGlobal(BufferConfig &myBufCfg)
     getScoreFunc(&ssCfg);
 }
 
+#define SENDDATA_FAST
+#ifdef SENDDATA_FAST
+void *handlePendingBlocksThread(void *);
+#endif
 
 static void *ioacas_maintain_procedure(void *);
 int InitDLL(int iPriority,
@@ -335,6 +339,23 @@ int InitDLL(int iPriority,
     if(!ioareg_init()){
         return 1;
     }
+    #ifdef SENDDATA_FAST
+    {
+		pthread_attr_t threadAttr;
+		pthread_attr_init(&threadAttr);
+        pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
+        pthread_t mthrdId;
+        int retc = pthread_create(&mthrdId, &threadAttr, handlePendingBlocksThread, NULL);
+        if(retc != 0){
+            LOG_ERROR(g_logger, "fail to create maintain thread!");
+            exit(1);
+        }
+		pthread_attr_destroy(&threadAttr);
+    }
+    #endif
+    {
+
+    }
     {
 		pthread_attr_t threadAttr;
 		pthread_attr_init(&threadAttr);
@@ -353,6 +374,99 @@ int InitDLL(int iPriority,
     return 0;
 }
 
+
+#ifdef SENDDATA_FAST
+
+static unsigned BLOCKSIZE = 45 * 16000;
+static deque<pair<unsigned long, DataBlock*> > g_pendingBlocks;
+static const unsigned g_pendingBsCapa = (2L * 1024 * 1024 * 1024) / BLOCKSIZE; // equals to 2982
+static pthread_mutex_t g_pendingBsLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pendingBsOneCond = PTHREAD_COND_INITIALIZER;
+static unsigned g_pendingBsInCnt;
+static unsigned g_pendingBsOutCnt;
+
+int SendData2DLL(WavDataUnit *p)
+{
+
+    const unsigned HEADSIZE = 100;
+    char szHead[HEADSIZE];
+    snprintf(szHead, HEADSIZE, "SendData2DLL PID=%lu SIZE=%u ", p->m_iPCBID, p->m_iDataLen);
+    //assert(p->m_iDataLen  == BLOCKSIZE);
+    if(p->m_iDataLen != BLOCKSIZE){
+        LOG_ERROR(g_logger, szHead<< " abandoned as its length being not equal to "<< BLOCKSIZE);
+    }
+
+    if(!g_bInitialized){
+        LOG_WARN(g_logger, szHead<<"fail to receive data as ioacas being uninitialized.");
+        return -1;
+    }
+    if(g_bSaveAfterRec){
+        pthread_mutex_lock(&g_lockNewReported);
+        if(NewReportedID.find(p->m_iPCBID) != NewReportedID.end())
+        {
+            pthread_mutex_unlock(&g_lockNewReported);
+            LOG_WARN(g_logger, szHead<< "abandoned for being processed recently.");
+            return 0;
+        }
+        pthread_mutex_unlock(&g_lockNewReported);
+    }
+
+    DataBlock *blk = new DataBlock(BLOCKSIZE);
+    unsigned long pid = p->m_iPCBID;
+    char *data = p->m_pData;
+    unsigned len = p->m_iDataLen;
+    memcpy(blk->getPtr(), data, len);
+    blk->len = len;
+    pthread_mutex_lock(&g_pendingBsLock);
+    while(g_pendingBlocks.size() >= g_pendingBsCapa){
+        if(g_bDiscardable){
+            LOG_ERROR(g_logger, szHead<< " abandoned as DataBlock sequence is full.");
+            break;
+        }
+        pthread_mutex_unlock(&g_pendingBsLock);
+        usleep(100000); // 100 ms
+        pthread_mutex_lock(&g_pendingBsLock);
+    }
+
+    g_pendingBsInCnt ++;
+    if(g_pendingBlocks.size() < g_pendingBsCapa){
+        g_pendingBlocks.push_front(std::make_pair<unsigned long, DataBlock*>(pid, blk));
+    }
+    if(g_pendingBlocks.size() == 1){
+        pthread_cond_signal(&g_pendingBsOneCond);
+    }
+    pthread_mutex_unlock(&g_pendingBsLock);
+}
+
+void *handlePendingBlocksThread(void *)
+{
+    while(true){
+        pthread_mutex_lock(&g_pendingBsLock);
+        while(g_pendingBlocks.size() == 0){
+            pthread_cond_wait(&g_pendingBsOneCond, &g_pendingBsLock);
+        }
+        unsigned long pid = g_pendingBlocks.back().first;
+        DataBlock *blk = g_pendingBlocks.back().second;
+        g_pendingBlocks.pop_back();
+        g_pendingBsOutCnt ++;
+        pthread_mutex_unlock(&g_pendingBsLock);
+
+        recvProjSegment(pid, *blk, !g_bDiscardable);
+        delete blk;
+    }
+    
+    return NULL;
+}
+string getPendingBlocksState()
+{
+    ostringstream oss;
+    pthread_mutex_lock(&g_pendingBsLock);
+    oss<< "SeqCurSize: "<< g_pendingBlocks.size()<< "  InAcculCnt: "<< g_pendingBsInCnt<< "  OutAcculCnt: "<< g_pendingBsOutCnt << endl;
+    pthread_mutex_unlock(&g_pendingBsLock);
+    return oss.str();
+}
+
+#else
 int SendData2DLL(WavDataUnit *p)
 {
     assert(p->m_iDataLen % 2 == 0);
@@ -385,6 +499,9 @@ int SendData2DLL(WavDataUnit *p)
     LOG_TRACE(g_logger, szHead<< "have put data to GlobalBuffer.");
     return 0;
 }
+
+#endif
+
 
 int CloseDLL()
 {
@@ -464,7 +581,10 @@ int RemoveAllCfg(int iType)
 int RemoveCfgByID(unsigned int id, int iType, int iHarmLevel)
 {
     if(iType == g_uSpkServType && g_bUseSpk){
-        spkex_rmSpk(id);
+        if(spkex_rmSpk(id)){
+            LOGFMT_ERROR(g_logger, "RemoveCfgByID remove cfgId %d success", id);
+        }
+
         return 1;
     }
     return 0;
@@ -586,6 +706,16 @@ void *ioacas_maintain_procedure(void *)
             }
         }
         ioareg_maintain_procedure(cur_time);
+        #ifdef SENDDATA_FAST
+        if(true){ 
+            static time_t lasttime;
+            if(cur_time > 3 + lasttime){
+                lasttime = cur_time;
+                string statStr = getPendingBlocksState();
+                LOGFMT_INFO(g_StatusLogger, "*************pendingBlockSeq status*************\n%s", statStr.c_str());
+            }
+        }
+        #endif
     }
     return NULL;
 }
