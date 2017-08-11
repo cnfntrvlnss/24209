@@ -70,6 +70,13 @@ static void clockoutput_start(const char *fmt, ...){}
 static std::string clockoutput_end(){return "";}
 #endif 
 
+
+
+
+
+
+
+//related to file and directory.
 bool if_directory_exists(const char *dir, bool bForce = false);
 int save_binary_data(const char *filePath, const void* ptr, size_t num, ...);
 

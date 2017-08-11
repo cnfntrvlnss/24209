@@ -377,17 +377,106 @@ int InitDLL(int iPriority,
 
 #ifdef SENDDATA_FAST
 
-static unsigned BLOCKSIZE = 45 * 16000;
-static deque<pair<unsigned long, DataBlock*> > g_pendingBlocks;
-static const unsigned g_pendingBsCapa = (2L * 1024 * 1024 * 1024) / BLOCKSIZE; // equals to 2982
-static pthread_mutex_t g_pendingBsLock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_pendingBsOneCond = PTHREAD_COND_INITIALIZER;
-static unsigned g_pendingBsInCnt;
-static unsigned g_pendingBsOutCnt;
+typedef pair<unsigned long, DataBlock*> Task;
+typedef vector<Task > Deque;
+struct LocalBlockDeque{
+    Deque pendingBlocks;
+    pthread_mutex_t bsLock;
+    unsigned append(Task t){
+        pthread_mutex_lock(&bsLock);
+        pendingBlocks.push_back(t);
+        unsigned ret = pendingBlocks.size();
+        pthread_mutex_unlock(&bsLock);
+        return ret;
+    }
+    
+    unsigned remove(Deque& vec){
+        pthread_mutex_lock(&bsLock);
+        vec.insert(vec.end(), pendingBlocks.begin(), pendingBlocks.end());
+        pendingBlocks.clear();
+        pthread_mutex_unlock(&bsLock);
+        return vec.size();
+    }
+    
+    LocalBlockDeque(){
+        pthread_mutex_init(&bsLock, NULL);
+    }
+    ~LocalBlockDeque(){
+        pthread_mutex_destroy(&bsLock);
+    }
+private:
+    LocalBlockDeque(const LocalBlockDeque &);
+    LocalBlockDeque& operator=(const LocalBlockDeque &);
+};
+
+static unsigned g_UsedBlockCount;
+static unsigned g_DropBlockCount;
+static pthread_mutex_t g_BlockCountLock = PTHREAD_MUTEX_INITIALIZER;
+
+static map<unsigned long, LocalBlockDeque*> g_mAllDeques;
+//the according deques have at lest one task.
+set<unsigned long> g_PendingDeques;
+//count all blocks, for free some in case greater than BsCapa.
+unsigned g_PendingBlocksSize;
+static pthread_mutex_t g_BlockDequeLocks = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_PendingDequeOneCond = PTHREAD_COND_INITIALIZER;
+
+static inline void appendDequeTask(Task task)
+{
+    unsigned long tid = pthread_self();
+    bool balloc = false;
+    LocalBlockDeque *seq;
+    pthread_mutex_lock(&g_BlockDequeLocks);
+    if(g_mAllDeques.find(tid) != g_mAllDeques.end()){
+        seq = g_mAllDeques[tid];
+    }
+    else{
+        seq = new LocalBlockDeque();
+        g_mAllDeques[tid] = seq;
+        balloc = true;
+    }
+    g_PendingBlocksSize ++;
+    pthread_mutex_unlock(&g_BlockDequeLocks);
+    
+    unsigned size = seq->append(task);
+    if(size == 1){
+        //probably erased from PendingDeque
+        bool bNot = false;
+        pthread_mutex_lock(&g_BlockDequeLocks);
+        if(g_PendingDeques.size() == 0){
+            bNot = true;
+        }
+        if(g_PendingDeques.find(tid) == g_PendingDeques.end()){
+            g_PendingDeques.insert(tid);
+        }
+        pthread_mutex_unlock(&g_BlockDequeLocks);
+        if(bNot){
+            pthread_cond_signal(&g_PendingDequeOneCond);
+        }
+    }
+}
+
+//waiting if no task arrived.
+static inline unsigned long removeDequeTasks(Deque &tasks){
+    unsigned long ret = 0;
+    while(tasks.size() == 0){
+        pthread_mutex_lock(&g_BlockDequeLocks);
+        while(g_PendingDeques.size() == 0){
+            pthread_cond_wait(&g_PendingDequeOneCond, &g_BlockDequeLocks);
+        }
+        ret = *g_PendingDeques.begin();
+        g_PendingDeques.erase(ret);
+        g_mAllDeques[ret]->remove(tasks);
+        g_PendingBlocksSize -= tasks.size();
+        
+        pthread_mutex_unlock(&g_BlockDequeLocks);
+
+    }
+    return ret;
+}
 
 int SendData2DLL(WavDataUnit *p)
 {
-
     const unsigned HEADSIZE = 100;
     char szHead[HEADSIZE];
     snprintf(szHead, HEADSIZE, "SendData2DLL PID=%lu SIZE=%u ", p->m_iPCBID, p->m_iDataLen);
@@ -411,48 +500,47 @@ int SendData2DLL(WavDataUnit *p)
         pthread_mutex_unlock(&g_lockNewReported);
     }
 
-    DataBlock *blk = new DataBlock(BLOCKSIZE);
+    DataBlock blk = BlockMana_alloc();
+    if(blk.getPtr() == NULL){
+        if(g_bDiscardable){
+            LOG_ERROR(g_logger, szHead<< " abandoned for the DataBlock pool is full.");
+            pthread_mutex_lock(&g_BlockCountLock);
+            g_DropBlockCount ++;
+            pthread_mutex_unlock(&g_BlockCountLock);
+            return 0;
+
+        }
+        else{
+            while(blk.getPtr() == NULL){
+                usleep(2000); // 2 millisecs.
+                blk = BlockMana_alloc();
+            }
+        }
+    }
+    pthread_mutex_lock(&g_BlockCountLock);
+    g_UsedBlockCount ++;
+    pthread_mutex_unlock(&g_BlockCountLock);
+
     unsigned long pid = p->m_iPCBID;
     char *data = p->m_pData;
     unsigned len = p->m_iDataLen;
-    memcpy(blk->getPtr(), data, len);
-    blk->len = len;
-    pthread_mutex_lock(&g_pendingBsLock);
-    while(g_pendingBlocks.size() >= g_pendingBsCapa){
-        if(g_bDiscardable){
-            LOG_ERROR(g_logger, szHead<< " abandoned as DataBlock sequence is full.");
-            break;
-        }
-        pthread_mutex_unlock(&g_pendingBsLock);
-        usleep(100000); // 100 ms
-        pthread_mutex_lock(&g_pendingBsLock);
-    }
+    memcpy(blk.getPtr(), data, len);
+    blk.len = len;
 
-    g_pendingBsInCnt ++;
-    if(g_pendingBlocks.size() < g_pendingBsCapa){
-        g_pendingBlocks.push_front(std::make_pair<unsigned long, DataBlock*>(pid, blk));
-    }
-    if(g_pendingBlocks.size() == 1){
-        pthread_cond_signal(&g_pendingBsOneCond);
-    }
-    pthread_mutex_unlock(&g_pendingBsLock);
+    appendDequeTask(std::make_pair<unsigned long, DataBlock*>(pid, new DataBlock(blk)));
 }
 
 void *handlePendingBlocksThread(void *)
 {
+    Deque vec;
     while(true){
-        pthread_mutex_lock(&g_pendingBsLock);
-        while(g_pendingBlocks.size() == 0){
-            pthread_cond_wait(&g_pendingBsOneCond, &g_pendingBsLock);
+        vec.clear();
+        removeDequeTasks(vec);
+        for(Deque::iterator it=vec.begin(); it != vec.end(); it++){
+            DataBlock *blk = it->second;
+            recvProjSegment(it->first, *blk);
+            delete blk;
         }
-        unsigned long pid = g_pendingBlocks.back().first;
-        DataBlock *blk = g_pendingBlocks.back().second;
-        g_pendingBlocks.pop_back();
-        g_pendingBsOutCnt ++;
-        pthread_mutex_unlock(&g_pendingBsLock);
-
-        recvProjSegment(pid, *blk, !g_bDiscardable);
-        delete blk;
     }
     
     return NULL;
@@ -460,9 +548,11 @@ void *handlePendingBlocksThread(void *)
 string getPendingBlocksState()
 {
     ostringstream oss;
-    pthread_mutex_lock(&g_pendingBsLock);
-    oss<< "SeqCurSize: "<< g_pendingBlocks.size()<< "  InAcculCnt: "<< g_pendingBsInCnt<< "  OutAcculCnt: "<< g_pendingBsOutCnt << endl;
-    pthread_mutex_unlock(&g_pendingBsLock);
+    pthread_mutex_lock(&g_BlockDequeLocks);
+    pthread_mutex_lock(&g_BlockCountLock);
+    oss<< "SeqCurSize: "<< g_PendingBlocksSize<< "  dropAccuCnt: "<< g_DropBlockCount<< "  usedAccuCnt: "<< g_UsedBlockCount << endl;
+    pthread_mutex_unlock(&g_BlockCountLock);
+    pthread_mutex_unlock(&g_BlockDequeLocks);
     return oss.str();
 }
 

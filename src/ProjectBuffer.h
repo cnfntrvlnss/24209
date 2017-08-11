@@ -15,11 +15,72 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <list>
 #include <set>
 #include <ostream>
 
 typedef bool(*FuncSaveData)(FILE*, std::vector<DataBlock>&);
 namespace zen4audio{
+
+/**
+ * 管理一批DataBlock集合, DataBlock 代表固定长度的一段内存，支持拷贝，赋值， 自动销毁。
+ *
+ */
+extern unsigned BLOCKSIZE;
+extern unsigned g_uBlocksMin; //reserved for potential use.
+extern unsigned g_uBlocksMax;
+
+extern std::list<DataBlock> g_liFreeDataBlocks;
+extern std::set<DataBlock> g_liUsedDataBlocks;
+extern pthread_mutex_t g_DataBlocksLock;
+static inline DataBlock BlockMana_alloc()
+{
+    pthread_mutex_lock(&g_DataBlocksLock);
+    std::list<DataBlock>::iterator it = g_liFreeDataBlocks.begin();
+    for(; it != g_liFreeDataBlocks.end(); it++){
+        if(it->getPeerNum() == 1) break;
+    }
+    if(it != g_liFreeDataBlocks.end()){
+        std::pair<std::set<DataBlock>::iterator, bool> reti = g_liUsedDataBlocks.insert(*it);
+        assert(reti.second);
+        g_liFreeDataBlocks.erase(it);
+        assert((*reti.first).offset == 0 && (*reti.first).len == 0);
+        pthread_mutex_unlock(&g_DataBlocksLock);
+        return *reti.first;
+    }
+    else{
+        size_t allcnt = g_liFreeDataBlocks.size() + g_liUsedDataBlocks.size();
+        if(allcnt > g_uBlocksMax){
+            pthread_mutex_unlock(&g_DataBlocksLock);
+            return DataBlock();
+        }
+        else {
+            std::pair<std::set<DataBlock>::iterator, bool> reti = g_liUsedDataBlocks.insert(DataBlock(BLOCKSIZE));
+            assert(reti.second);
+            assert((*reti.first).offset == 0 && (*reti.first).len == 0);
+            pthread_mutex_unlock(&g_DataBlocksLock);
+            return *reti.first;
+        }
+    }
+}
+
+static inline void BlockMana_relse(const DataBlock& blk)
+{
+    pthread_mutex_lock(&g_DataBlocksLock);
+    assert(blk.offset + blk.len <= blk.getCap());
+    assert(g_liUsedDataBlocks.find(blk) != g_liUsedDataBlocks.end());
+    if(g_liFreeDataBlocks.size() + g_liUsedDataBlocks.size() <= g_uBlocksMin){
+        g_liFreeDataBlocks.push_back(blk);
+        g_liFreeDataBlocks.back().len = 0;
+        g_liFreeDataBlocks.back().offset = 0;
+        g_liUsedDataBlocks.erase(blk);
+    }
+    else{
+        g_liUsedDataBlocks.erase(blk);
+    }
+    pthread_mutex_unlock(&g_DataBlocksLock);
+}
+
 
 extern struct timeval ZERO_TIMEVAL;
 /**
@@ -221,7 +282,7 @@ bool init_bufferglobal(BufferConfig buffConfig, FuncPushProj pushProjAddr = NULL
 void rlse_bufferglobal();
 extern "C" void notifyProjFinish(unsigned long pid);
 
-void recvProjSegment(unsigned long pid, DataBlock &blk, bool iswait);
+void recvProjSegment(unsigned long pid, DataBlock &blk);
 void recvProjSegment(ProjectSegment param, bool iswait = false);
 ProjectBuffer* obtainBuffer(unsigned long pid);
 void obtainAllBuffers(std::map<unsigned long, ProjectBuffer*>& allBufs);

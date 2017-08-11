@@ -30,62 +30,13 @@ using namespace std;
 #define PCM_PERSEC_LEN 16000
 namespace zen4audio{
 
-static unsigned BLOCKSIZE= 45 * 16000;
-static unsigned g_uBlocksMin = 300; //reserved for potential use.
-static unsigned g_uBlocksMax = 600;
+unsigned BLOCKSIZE= 45 * 16000;
+unsigned g_uBlocksMin = 300; //reserved for potential use.
+unsigned g_uBlocksMax = 600;
 
-static list<DataBlock> g_liFreeBlocks;
-static set<DataBlock> g_liUsedBlocks;
-//static LockHelper g_BlockManaLocker;
-static inline DataBlock BlockMana_alloc()
-{
-    //AutoLock lock(g_BlockManaLocker);
-    list<DataBlock>::iterator it = g_liFreeBlocks.begin();
-    for(; it != g_liFreeBlocks.end(); it++){
-        if(it->getPeerNum() == 1) break;
-    }
-    if(it != g_liFreeBlocks.end()){
-        pair<set<DataBlock>::iterator, bool> reti = g_liUsedBlocks.insert(*it);
-        assert(reti.second);
-        g_liFreeBlocks.erase(it);
-        assert((*reti.first).offset == 0 && (*reti.first).len == 0);
-        return *reti.first;
-    }
-    else{
-        size_t allcnt = g_liFreeBlocks.size() + g_liUsedBlocks.size();
-        if(allcnt > g_uBlocksMax) return DataBlock();
-        else {
-            pair<set<DataBlock>::iterator, bool> reti = g_liUsedBlocks.insert(DataBlock(BLOCKSIZE));
-            assert(reti.second);
-            assert((*reti.first).offset == 0 && (*reti.first).len == 0);
-            return *reti.first;
-        }
-    }
-}
-
-static inline bool BlockMana_feed(DataBlock &blk)
-{
-    size_t allcnt = g_liFreeBlocks.size() + g_liUsedBlocks.size();
-    if(allcnt > g_uBlocksMax) return false;
-    g_liUsedBlocks.insert(blk);
-    return true;
-}
-
-static inline void BlockMana_relse(const DataBlock& blk)
-{
-    //AutoLock lock(g_BlockManaLocker);
-    assert(blk.offset + blk.len <= blk.getCap());
-    assert(g_liUsedBlocks.find(blk) != g_liUsedBlocks.end());
-    if(g_liFreeBlocks.size() + g_liUsedBlocks.size() <= g_uBlocksMin){
-        g_liFreeBlocks.push_back(blk);
-        g_liFreeBlocks.back().len = 0;
-        g_liFreeBlocks.back().offset = 0;
-        g_liUsedBlocks.erase(blk);
-    }
-    else{
-        g_liUsedBlocks.erase(blk);
-    }
-}
+std::list<DataBlock> g_liFreeDataBlocks;
+std::set<DataBlock> g_liUsedDataBlocks;
+pthread_mutex_t g_DataBlocksLock = PTHREAD_MUTEX_INITIALIZER;
 
 struct timeval ZERO_TIMEVAL;
 static LoggerId g_BufferLogger = LOG4Z_MAIN_LOGGER_ID;
@@ -389,7 +340,7 @@ void getBufferStatus(string &outstr)
     unsigned curlen = 0;
     curlen += sprintf(tmpSt + curlen, "BlockSize=%u BlocksMax=%u BlocksMin=%u\n", BLOCKSIZE, g_uBlocksMax, g_uBlocksMin);
     g_ProjsLocker.lock();
-    curlen += sprintf(tmpSt + curlen, "FreeBlocks: %lu    UsedBlocks: %lu\n", g_liFreeBlocks.size(), g_liUsedBlocks.size());
+    curlen += sprintf(tmpSt + curlen, "FreeBlocks: %lu    UsedBlocks: %lu\n", g_liFreeDataBlocks.size(), g_liUsedDataBlocks.size());
     curlen += sprintf(tmpSt + curlen, "allProjsIDs: %lu    ", g_mapProjs.size());
     g_ProjsLocker.unLock();
 
@@ -461,7 +412,7 @@ void notifyProjFinish(unsigned long pid)
     LOGFMT_DEBUG(g_BufferLogger, "notifyProjFinish PID=%lu.", pid);
 }
 
-void recvProjSegment(unsigned long pid, DataBlock &blk, bool iswait)
+void recvProjSegment(unsigned long pid, DataBlock &blk)
 {
     ProjectBuffer *tmpPrj = NULL;
     g_ProjsLocker.lock();
@@ -484,22 +435,9 @@ void recvProjSegment(unsigned long pid, DataBlock &blk, bool iswait)
     tmpPrj = g_mapProjs[pid].prj;
     g_mapProjs[pid].cnt ++;
     assert(g_mapProjs[pid].leftSize == 0);
-
-    bool bSucc = true;
-    while(!BlockMana_feed(blk)){
-        if(!iswait){
-            LOGFMT_ERROR(g_BufferLogger, "PID=%lu GlobalBuffer failed to receive data, as DataBlock pool is full.", pid);
-            bSucc = false;
-            break;
-        }
-        else{
-            g_ProjsLocker.lock();
-            g_ProjsLocker.unLock();
-        }
-    }
     g_ProjsLocker.unLock();
 
-    if(bSucc) tmpPrj->recvData(blk);
+    tmpPrj->recvData(blk);
     returnBuffer(tmpPrj);
 }
 
